@@ -3,3 +3,4 @@ syn4586436,FALSE
 https://github.com/blogsdon/metanetwork/commit/c984977e42684fc53939ecdf4de0a126be182fd2,TRUE
 https://github.com/blogsdon/metanetworkSynapse/commit/6eda84902cbef3114e375d352ddd236e78bcaa21,TRUE
 https://github.com/blogsdon/CRANIO/blob/0f105d64e8375562d2cf9a51c251c289f578a416/cranioSubmissionScript.sh,TRUE
+https://github.com/blogsdon/CRANIO/blob/4da5113dd78f4bb609bc690ef4b9129dbdf6cbd1/grabCRANIOData.R,TRUE
