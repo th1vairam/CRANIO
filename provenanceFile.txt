@@ -1,0 +1,4 @@
+provenance,executed
+syn4586436,FALSE
+https://github.com/blogsdon/metanetwork/commit/c984977e42684fc53939ecdf4de0a126be182fd2,TRUE
+https://github.com/blogsdon/metanetworkSynapse/commit/6eda84902cbef3114e375d352ddd236e78bcaa21,TRUE

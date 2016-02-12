@@ -1,0 +1,6 @@
+fileType,csv
+dataType,analysis
+analysisType,statisticalNetworkReconstruction
+normalizationStatus,TRUE
+disease,craniosynostosis
+organism,HomoSapiens
