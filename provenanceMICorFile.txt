@@ -2,5 +2,5 @@ provenance,executed
 syn4586436,FALSE
 https://github.com/blogsdon/metanetwork/commit/c984977e42684fc53939ecdf4de0a126be182fd2,TRUE
 https://github.com/blogsdon/metanetworkSynapse/commit/6eda84902cbef3114e375d352ddd236e78bcaa21,TRUE
-https://github.com/blogsdon/CRANIO/blob/adfda1b5f7d191e8e5ea4209b4274032eb076c92/cranioMICorSubmissionScript.sh,TRUE
+https://github.com/blogsdon/CRANIO/blob/a2f1532290314d9c20b2106a4a6ccb7f10b04a7e/cranioMICorSubmissionScript.sh,TRUE
 https://github.com/blogsdon/CRANIO/blob/4da5113dd78f4bb609bc690ef4b9129dbdf6cbd1/grabCRANIOData.R,TRUE
