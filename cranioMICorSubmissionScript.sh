@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #number of cores to reserve for job
-nthreads=319
+nthreads=8
 
 #full s3 path where networks will go
 s3="s3://metanetworks/CRANIO/"
@@ -25,16 +25,16 @@ parentId="syn5650456"
 annotationFile="/shared/CRANIO/annoFile.txt"
 
 #path to csv file with provenance to add to file on synapse
-provenanceFile="/shared/CRANIO/provenanceFile.txt"
+provenanceFile="/shared/CRANIO/provenanceMICorFile.txt"
 
 #path to error output
-errorOutput="/shared/CRANIO/error.txt"
+errorOutput="/shared/CRANIO/marginalerror.txt"
 
 #path to out output
-outOutput="/shared/CRANIO/out.txt"
+outOutput="/shared/CRANIO/marginalout.txt"
 
 #job script name
-jobname="cranio"
+jobname="cranioMarginal"
 
 
 echo "qsub -v s3=$s3,dataFile=$dataFile,pathv=$pathv,c3net=1,mrnet=1,aracne=1,wgcnaST=1,wgcnaTOM=1,sparrowZ=0,lassoCV1se=0,ridgeCV1se=0,genie3=0,tigress=0,numberCore=$nthreads,outputpath=$outputpath,s3b=$s3b,parentId=$parentId,annotationFile=$annotationFile,provenanceFile=$provenanceFile -pe orte $nthreads -S /bin/bash -V -cwd -N $jobname -e $errorOutput -o $outOutput $pathv/buildNet.sh"
