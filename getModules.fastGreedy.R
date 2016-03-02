@@ -30,7 +30,7 @@ thisRepo <- getRepo(repository = "th1vairam/CRANIO",
                     refName='moduleAnal')
 
 thisFile <- getPermlink(repository = thisRepo,
-                        repositoryPath=paste0('R/', thisFileName))
+                        repositoryPath=paste0(thisFileName))
 
 # Synapse specific parameters
 activityName = 'Module Identification'
