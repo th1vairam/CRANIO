@@ -128,7 +128,14 @@ gsets = c("Achilles_fitness_decrease", "Achilles_fitness_increase", "Allen_Brain
           "TargetScan_microRNA", "Tissue_Protein_Expression_from_Human_Proteome_Map", "Tissue_Protein_Expression_from_ProteomicsDB",
           "Transcription_Factor_PPIs", "Virus_Perturbations_from_GEO_down", "Virus_Perturbations_from_GEO_up", "WikiPathways_2015",
           "GeneFamily","CellMarkers")
-GeneSets = GeneSets[gsets]
+GeneSets.Enrichr = GeneSets[gsets]
+
+# Download AD related gene sets from synapse
+GL_OBJ = synGet('syn4893059');
+ALL_USED_IDs = c(ALL_USED_IDs, GL_OBJ$properties$id)
+load(GL_OBJ@filePath)
+
+GeneSets.CM = list(CellTypeMarkers = GeneSets[grep('Zhang', names(GeneSets))])
 ############################################################################################################
 
 ############################################################################################################
@@ -155,6 +162,7 @@ MOD = merge(MOD, ensg2hgnc, by.x = 'GeneIDs', by.y = 'ensembl_gene_id', all.x=T)
 
 ############################################################################################################
 #### Filter gene list ####
+GeneSets = c(GeneSets.Enrichr, GeneSets.CM)
 GeneSets = filterGeneSets(GeneSets, backGroundGenes, minSize = 10, maxSize = 1000)
 ############################################################################################################
 
