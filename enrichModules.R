@@ -11,6 +11,7 @@ cat("\014")
 ############################################################################################################
 #### Libraries ####
 library(synapseClient)
+library(CovariateAnalysis)
 library(dplyr)
 library(WGCNA)
 library(tools)
@@ -45,71 +46,6 @@ activityDescription = 'Enrichment analysis of network modules using hypergeometr
 ############################################################################################################
 
 ############################################################################################################
-#### Function definitions ####
-# Function to filter Gene Sets
-filterGeneSets <- function(GeneLists, # List of lists
-                           genesInBackground, # background set of genes
-                           minSize = 10,
-                           maxSize = 1000){
-  GeneLists = lapply(GeneLists, 
-                     function(x, genesInBackground){
-                       x = lapply(x, 
-                                  function(x, genesInBackground){
-                                    return(intersect(x, genesInBackground))
-                                  },
-                                  genesInBackground)
-                       return(x)
-                     }, 
-                     genesInBackground)
-  
-  GeneLists = lapply(GeneLists, 
-                     function(x, minSize, maxSize){
-                       len = sapply(x, length)
-                       x = x[len>minSize & len<maxSize]
-                       return(x)
-                     },
-                     minSize,
-                     maxSize)
-  len = sapply(GeneLists, length)
-  GeneLists = GeneLists[len != 0]
-  
-  return(GeneLists)
-}
-
-# Function to perform Fishers enrichment analysis
-fisherEnrichment <- function(genesInSignificantSet, # A character vector of differentially expressed or some significant genes to test
-                             genesInGeneSet, # A character vector of genes in gene set like GO annotations, pathways etc...
-                             genesInBackground # Background genes that are 
-){
-  genesInSignificantSet = intersect(genesInSignificantSet, genesInBackground) # back ground filtering
-  genesInNonSignificantSet = base::setdiff(genesInBackground, genesInSignificantSet)
-  genesInGeneSet = intersect(genesInGeneSet, genesInBackground) # back ground filtering
-  genesOutGeneSet = base::setdiff(genesInBackground,genesInGeneSet)
-  
-  pval = fisher.test(
-    matrix(c(length(intersect(genesInGeneSet, genesInSignificantSet)),             
-             length(intersect(genesInGeneSet, genesInNonSignificantSet)),
-             length(intersect(genesOutGeneSet, genesInSignificantSet)),
-             length(intersect(genesOutGeneSet, genesInNonSignificantSet))), 
-           nrow=2, ncol=2),
-    alternative="greater")
-  OR = (length(intersect(genesInGeneSet, genesInSignificantSet)) * length(intersect(genesOutGeneSet, genesInNonSignificantSet))) / (length(intersect(genesInGeneSet, genesInNonSignificantSet)) * length(intersect(genesOutGeneSet, genesInSignificantSet)))
-  return(data.frame(pval = pval$p.value,
-                    ngenes = length(genesInGeneSet),
-                    noverlap = length(intersect(genesInGeneSet, genesInSignificantSet)),
-                    OR = OR ))
-}
-
-# Function to convert rownames to first column of a df
-rownameToFirstColumn <- function(DF,colname){
-  DF <- as.data.frame(DF)
-  DF[,colname] <- row.names(DF)
-  DF <- DF[,c(dim(DF)[2],1:(dim(DF)[2]-1))]
-  return(DF)
-}
-############################################################################################################
-
-############################################################################################################
 #### Get gene sets ####
 # Download enrichr gene sets from synapse
 GL_OBJ = synGet('syn4867851')
@@ -136,6 +72,13 @@ ALL_USED_IDs = c(ALL_USED_IDs, GL_OBJ$properties$id)
 load(GL_OBJ@filePath)
 
 GeneSets.CM = list(CellTypeMarkers = GeneSets[grep('Zhang', names(GeneSets))])
+
+# Download cranio related gene sets from synapse
+GL_OBJ = synGet('syn5752718');
+ALL_USED_IDs = c(ALL_USED_IDs, GL_OBJ$properties$id)
+load(GL_OBJ@filePath)
+
+GeneSets.Cranio = list(Cranio = GeneSets)
 ############################################################################################################
 
 ############################################################################################################
@@ -162,7 +105,7 @@ MOD = merge(MOD, ensg2hgnc, by.x = 'GeneIDs', by.y = 'ensembl_gene_id', all.x=T)
 
 ############################################################################################################
 #### Filter gene list ####
-GeneSets = c(GeneSets.Enrichr, GeneSets.CM)
+GeneSets = c(GeneSets.Enrichr, GeneSets.CM, GeneSets.Cranio)
 GeneSets = filterGeneSets(GeneSets, backGroundGenes, minSize = 10, maxSize = 1000)
 ############################################################################################################
 
