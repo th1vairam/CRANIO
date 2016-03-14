@@ -132,9 +132,11 @@ for (name in unique(MOD$modulelabels)){
 }
 
 # Write results to file
-enrichResults = rbindlist(enrichResults, use.names = TRUE, idcol = 'ComparisonName') %>%
+enrichResults = rbindlist(enrichResults, fill= T, use.names = TRUE, idcol = 'ComparisonName') %>%
   dplyr::mutate_each(funs(unlist))
-write.table(enrichResults, file = paste(gsub(' ','_',FNAME),'enrichmentResults.tsv',sep='_'), sep='\t', row.names=F)
+enrichResults$Odds.Ratio = unlist(enrichResults$Odds.Ratio)
+tmp = enrichResults %>% dplyr::select(-OR, -OverlapedGenes) %>% sapply(as.character)
+write.table(tmp, file = paste(gsub(' ','_',FNAME),'enrichmentResults.tsv',sep='_'), sep='\t', row.names=F)
 gc()
 ############################################################################################################
 
