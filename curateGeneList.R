@@ -66,14 +66,17 @@ GeneSets = c(GeneSets,
 
 #### Differentially expressed genes in clusters ####
 impgl = downloadFile('syn3105988') %>%
-  gather(Pathway, Presence, -V1) %>%
+  gather(Pathway, Presence, -gene) %>%
   group_by(Pathway, Presence) %>%
-  summarise(V1 = list(unique(sort(V1)))) %>%
+  summarise(gene = list(unique(sort(gene)))) %>%
   filter(Presence == 'YES')
-tmp = impgl$V1
+tmp = impgl$gene
 names(tmp) = impgl$Pathway
 
 GeneSets = c(GeneSets, tmp)
+
+tmp = read.table('synostosisGS.txt') %>% unlist %>% unique %>% as.character 
+GeneSets$Synostosis = tmp
 ############################################################################################################
 
 ############################################################################################################
