@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 
-# Function to perform enrichment analysis od modules (from synapse as RData file)
-# Get arguments from comman line
+# Function to perform enrichment analysis of modules (from synapse as RData file)
+# Get arguments from command line
 args = c('syn5700963')
 
 # Clear R console screen output
@@ -12,6 +12,7 @@ cat("\014")
 #### Libraries ####
 library(synapseClient)
 library(CovariateAnalysis)
+library(plyr)
 library(dplyr)
 library(WGCNA)
 library(tools)
@@ -20,8 +21,10 @@ library(igraph)
 library(data.table)
 library(biomaRt)
 
+library(xlsx)
+
 # Needs the dev branch
-library(rGithubClient)
+library(githubr)
 
 # login to synapse
 synapseLogin()
@@ -43,6 +46,35 @@ thisFile <- getPermlink(repository = thisRepo,
 # Synapse specific parameters
 activityName = 'Module enrichment'
 activityDescription = 'Enrichment analysis of network modules using hypergeometric method'
+############################################################################################################
+
+############################################################################################################
+# Function to perform Fishers enrichment analysis
+fisherEnrichment <- function(genesInSignificantSet, # A character vector of differentially expressed or some significant genes to test
+                             genesInGeneSet, # A character vector of genes in gene set like GO annotations, pathways etc...
+                             genesInBackground # Background genes that are 
+){
+  genesInSignificantSet = intersect(genesInSignificantSet, genesInBackground) # back ground filtering
+  genesInNonSignificantSet = base::setdiff(genesInBackground, genesInSignificantSet)
+  genesInGeneSet = intersect(genesInGeneSet, genesInBackground) # back ground filtering
+  genesOutGeneSet = base::setdiff(genesInBackground,genesInGeneSet)
+  
+  pval = fisher.test(
+    matrix(c(length(intersect(genesInGeneSet, genesInSignificantSet)),             
+             length(intersect(genesInGeneSet, genesInNonSignificantSet)),
+             length(intersect(genesOutGeneSet, genesInSignificantSet)),
+             length(intersect(genesOutGeneSet, genesInNonSignificantSet))), 
+           nrow=2, ncol=2),
+    alternative="greater")
+  OR = (length(intersect(genesInGeneSet, genesInSignificantSet)) * length(intersect(genesOutGeneSet, genesInNonSignificantSet))) / (length(intersect(genesInGeneSet, genesInNonSignificantSet)) * length(intersect(genesOutGeneSet, genesInSignificantSet)))
+  return(data.frame(pval = pval$p.value,
+                    ngenes = length(genesInGeneSet),
+                    noverlap = length(intersect(genesInGeneSet, genesInSignificantSet)),
+                    Odds.Ratio = OR,
+                    Genes = paste(intersect(genesInGeneSet, genesInSignificantSet), collapse = '|')
+  )
+  )
+}
 ############################################################################################################
 
 ############################################################################################################
@@ -132,9 +164,16 @@ for (name in unique(MOD$modulelabels)){
 }
 
 # Write results to file
-enrichResults = rbindlist(enrichResults, use.names = TRUE, idcol = 'ComparisonName') %>%
-  dplyr::mutate_each(funs(unlist))
-write.table(enrichResults, file = paste(gsub(' ','_',FNAME),'enrichmentResults.tsv',sep='_'), sep='\t', row.names=F)
+tmp = rbindlist(enrichResults, use.names = TRUE, idcol = 'ComparisonName', fill = TRUE) %>%
+  filter(!is.na(Category))
+
+tmp$pval = unlist(tmp$pval)
+tmp$ngenes = unlist(tmp$ngenes)
+tmp$noverlap = unlist(tmp$noverlap)
+tmp$Odds.Ratio = unlist(tmp$Odds.Ratio)
+tmp$Genes = unlist(tmp$Genes)
+
+write.table(tmp, file = paste(gsub(' ','_',FNAME),'enrichmentResults.tsv',sep='_'), sep='\t', row.names=F)
 gc()
 ############################################################################################################
 
@@ -152,4 +191,116 @@ ENR_OBJ = synStore(ENR_OBJ,
                    used = ALL_USED_IDs,
                    activityName = activityName,
                    activityDescription = activityDescription)
+############################################################################################################
+
+############################################################################################################
+# Filter modules with more than 20 genes
+filteredModules = MOD %>%
+  group_by(modulelabels) %>%
+  dplyr::summarise(count = length(unique(hgnc_symbol))) %>%
+  filter(count >= 20)
+
+# Re-assign smaller modules to 0/NoModule
+ind = which(!(MOD$modulelabels %in% filteredModules$modulelabels))
+MOD[ind, 'moduleNumber'] = 0
+MOD[ind, 'modulelabels'] = 'NoModule'
+############################################################################################################
+
+############################################################################################################
+# Calculate node degree within module as well as in the whole network
+# Get network from synapse (rda format)
+NET_OBJ = synapseClient::synGet('syn5700531')
+ALL_USED_IDs = c(ALL_USED_IDs, 'syn5700531')
+
+# Load sparse network
+load(NET_OBJ@filePath)
+
+# Convert lsparseNetwork to igraph graph object
+g = igraph::graph.adjacency(sparseNetwork, mode = 'undirected', weighted = T, diag = F)
+
+# Calculate node degree and merge with modules
+MOD = MOD %>%
+  left_join( degree(g, v = V(g), mode = "all") %>%
+               rownameToFirstColumn('GeneIDs')) %>%
+  dplyr::rename(node.degree = DF)
+
+# Calculate module specific node degree
+tmp = MOD %>% 
+  dplyr::select(GeneIDs, modulelabels, hgnc_symbol, node.degree) %>%
+  plyr::dlply(.(modulelabels), .fun = function(x){
+    sg = subgraph(g, x$GeneIDs)
+    x = left_join(x, 
+                  degree(sg, v = V(sg), mode = "all") %>%
+                    rownameToFirstColumn('GeneIDs')) %>%
+      dplyr::rename(node.degree.in.module = DF) %>%
+      arrange(desc(node.degree.in.module))
+})
+
+# Store node degree in file
+for(mod in names(tmp))
+  write.xlsx(tmp[[mod]], 
+             file = 'cranioNodeDegree.xlsx', 
+             sheetName = paste(mod,'Degree'), row.names=F, col.names=F, append = T)
+
+# Write results to synapse
+OBJ = File('cranioNodeDegree.xlsx', name = 'Cranio Node Degree', parentId = 'syn5879683')
+OBJ = synStore(OBJ, executed = thisFile, used = c('syn5700531', args[1]), activityName = activityName,
+               activityDescription = activityDescription)
+############################################################################################################
+
+############################################################################################################
+# Filter enrichment results per module and present the pathways
+enrichResults = downloadFile('syn5701314')
+
+# Remove mouse related gene sets
+ind1 = grep('Mus', enrichResults$GeneSetName)
+ind2 = grep('mm9', enrichResults$GeneSetName)
+ind3 = grep('mouse', enrichResults$GeneSetName)
+ind4 = grep('MOUSE', enrichResults$GeneSetName)
+ind = setdiff(1:dim(enrichResults)[1], c(ind1, ind2, ind3, ind4))
+enrichResults = enrichResults[ind,]
+
+# Filter enrichment results (pathways)
+tmp = dlply(enrichResults, .(ComparisonName),.fun = function(x){
+  x1 = x %>%
+    filter(Category %in% c("WikiPathways_2015", "CellTypeMarkers", "Cranio", "Reactome_2015", "GO_Biological_Process")) %>%
+    mutate(fdr = p.adjust(pval, 'fdr')) %>%
+    filter(fdr <= 0.05) %>% arrange(desc(Odds.Ratio))
+  x1$OR = NULL
+  return(x1)
+})
+tmp = tmp[sapply(tmp, dim)[1,] != 0]
+
+for(mod in names(tmp))
+  write.xlsx(tmp[[mod]], 
+             file = 'cranioPathways.xlsx', 
+             sheetName = paste(mod,'Pathways'), 
+             row.names=F, col.names=T, append = T)
+
+# Write results to synapse
+OBJ = File('cranioPathways.xlsx', name = 'Cranio Pathways', parentId = 'syn5879683')
+OBJ = synStore(OBJ, executed = thisFile, used = c('syn5701314'), activityName = activityName,
+               activityDescription = activityDescription)
+
+# Filter enrichment results (regulations)
+tmp = dlply(enrichResults, .(ComparisonName),.fun = function(x){
+  x1 = x %>%
+    filter(Category %in% c("TargetScan_microRNA", "TF-LOF_Expression_from_GEO", "ChEA", "Chromosome_Location")) %>%
+    mutate(fdr = p.adjust(pval, 'fdr')) %>%
+    filter(fdr <= 0.05) %>% arrange(desc(Odds.Ratio))
+  x1$OR = NULL
+  return(x1)
+})
+tmp = tmp[sapply(tmp, dim)[1,] != 0]
+
+for(mod in names(tmp))
+  write.xlsx(tmp[[mod]], 
+             file = 'cranioRegulations.xlsx', 
+             sheetName = paste(mod,'TFs miRs Chromosome'), 
+             row.names=F, col.names=T, append = T)
+
+# Write results to synapse
+OBJ = File('cranioRegulations.xlsx', name = 'Cranio TFs miRNAs Chromosomes', parentId = 'syn5879683')
+OBJ = synStore(OBJ, executed = thisFile, used = c('syn5701314'), activityName = activityName,
+               activityDescription = activityDescription)
 ############################################################################################################
