@@ -74,9 +74,6 @@ tmp = impgl$gene
 names(tmp) = impgl$Pathway
 
 GeneSets = c(GeneSets, tmp)
-
-tmp = read.table('synostosisGS.txt') %>% unlist %>% unique %>% as.character 
-GeneSets$Synostosis = tmp
 ############################################################################################################
 
 ############################################################################################################
