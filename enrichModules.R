@@ -240,7 +240,7 @@ tmp = MOD %>%
 for(mod in names(tmp))
   write.xlsx(tmp[[mod]], 
              file = 'cranioNodeDegree.xlsx', 
-             sheetName = paste(mod,'Degree'), row.names=F, col.names=F, append = T)
+             sheetName = paste(mod,'Degree'), row.names=F, col.names=T, append = T)
 
 # Write results to synapse
 OBJ = File('cranioNodeDegree.xlsx', name = 'Cranio Node Degree', parentId = 'syn5879683')
