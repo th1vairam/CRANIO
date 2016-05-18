@@ -74,7 +74,7 @@ scoreVertices <- function(g, order = 1){
                  
                  Nx = Gx[igraph::V(neighbor.graph[[vert]])$name]
                  Nx = Nx*(1/D[vert,igraph::V(neighbor.graph[[vert]])$name])
-                 Nx = Nx*(1/S[igraph::as_ids(SP$predecessors)])
+                 Nx = Nx*(1/S[vert])
                  names(Nx) = V(neighbor.graph[[vert]])$name
                  sum(Nx[names(Nx) != vert])
                }
@@ -183,7 +183,10 @@ obj = synStore(obj, activityName = activityName,
                activityDescription = activityDescription, 
                used = ALL_USED_IDs, 
                executed = thisFile)
-# 
-# %>%
-#   dplyr::mutate(ranks = rank(rank(diffexp.score) * rank(variant.score) * rank(net.score))) %>%
-#   dplyr::arrange(desc(ranks)) 
+
+tmp = results %>%
+  dplyr::mutate(ranks1 = rank(net.score),
+                ranks2 = rank(rank(degree.score) * rank(net.score)),
+                ranks3 = rank(rank(diffexp.score) * rank(variant.score) * rank(net.score)),
+                ranks4 = rank(rank(diffexp.score) + rank(variant.score) + rank(net.score))) %>%
+  dplyr::arrange(desc(ranks1))
