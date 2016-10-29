@@ -214,7 +214,7 @@ for(mod in names(tmp))
              row.names=F, col.names=T, append = T)
 
 # Write results to synapse
-OBJ = File('cranioPathwaysCaseControl.xlsx', name = 'Cranio Pathways (case+control)', parentId = 'syn7320952')
+OBJ = File('cranioPathwaysCaseControl.xlsx', name = 'Cranio Enrichment Pathways Filtered (case+control)', parentId = 'syn7320952')
 OBJ = synStore(OBJ, executed = thisFile, used = ENR_OBJ, activityName = activityName,
                activityDescription = activityDescription)
 ############################################################################################################
