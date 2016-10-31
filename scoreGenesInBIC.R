@@ -191,7 +191,7 @@ all.genesets = lapply(all.genesets, function(x,g){
 },g)
 
 all.scores = lapply(all.genesets, function(x, g){
-  tmp = regulatorAnalysis.undirected_weighted(g, x, h = 3, n = 5, FDR = 0.05)
+  tmp = regulatorAnalysis.undirected_weighted(g, x, h = 3, n = 100, FDR = 0.05)
   
   tmp1 = join_all(list(tmp$scores %>%
                          CovariateAnalysis::rownameToFirstColumn('Gene.ID') %>%
