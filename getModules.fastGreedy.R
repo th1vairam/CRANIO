@@ -49,11 +49,30 @@ g = igraph::graph.adjacency(sparseNetwork, mode = 'undirected', weighted = T, di
 
 # Get modules using fast.greedy method (http://arxiv.org/abs/cond-mat/0408187)
 mod = igraph::fastgreedy.community(g)
-collectGarbage()
+Q.int = modularity(mod)
+gc()
 
 # Get individual clusters from the igraph community object
 clust.numLabels = igraph::membership(mod)
-collectGarbage()
+
+max.sz = 800
+# Iterate untill all modules are less than max.sz
+i = 1;
+max.mod.id = max(clust.numLabels)
+Q = as.numeric()
+while(i <= max.mod.id){
+  if (sum(clust.numLabels == i) > max.sz){
+    sg = induced_subgraph(g, clust.numLabels == i)
+    mod.sg = igraph::fastgreedy.community(sg)
+    clust.numLabels.sg = igraph::membership(mod.sg) + max.mod.id
+    clust.numLabels[names(clust.numLabels.sg)] = clust.numLabels.sg
+  }
+  Q[i] = modularity(g, clust.numLabels)
+  i = i +1; max.mod.id = max(clust.numLabels)
+}
+geneModules = data.frame(GeneIDs = V(g)$name,
+                         moduleNumber = as.numeric(clust.numLabels))
+gc()
 
 # Change cluster number to color labels
 labels = WGCNA::labels2colors(clust.numLabels)
