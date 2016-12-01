@@ -23,7 +23,7 @@ library(biomaRt)
 library(doParallel)
 library(foreach)
 
-cl = makeCluster(6)
+cl = makeCluster(14)
 registerDoParallel(cl)
 
 # Login to synapse
@@ -107,7 +107,7 @@ score.nodes <- function(g, G, h = 3, mode = 'all'){
 }
 
 # Function to find weighted regulators on directed networks
-regulatorAnalysis.undirected_weighted <- function(g, G, h = 3, n = 100, FDR = 0.05){
+regulatorAnalysis.undirected_weighted <- function(g, G, h = 3, n = 100, treshold.pval = 0.05, correction.method = 'bonferroni'){
   
   # Convert adjacency to igraph object
   background.genes = igraph::V(g)$name
@@ -130,8 +130,8 @@ regulatorAnalysis.undirected_weighted <- function(g, G, h = 3, n = 100, FDR = 0.
     tmp = t.test(perm.node.scores[i,], mu = node.scores[i], alternative = 'less')
     data.frame(pval = tmp$p.value, t = tmp$statistic, t.low = tmp$conf.int[1], t.high = tmp$conf.int[2])
   }
-  fdr = p.adjust(pval$pval, method = 'fdr')
-  names(fdr) = background.genes
+  corr.pval = p.adjust(pval$pval, method = correction.method)
+  names(corr.pval) = background.genes
   
   # Calculate node degree for identifying global regulators
   node.degree = igraph::degree(g)
@@ -144,9 +144,11 @@ regulatorAnalysis.undirected_weighted <- function(g, G, h = 3, n = 100, FDR = 0.
   # Promote high degree nodes as global regulators 
   key.regulators = list()
   key.regulators$scores = node.scores
-  key.regulators$fdr = fdr
-  key.regulators$regulators = background.genes[(fdr <= FDR)]
-  key.regulators$global.regulators = background.genes[((node.degree > (mean.node.degree + 2*stddev.node.degree)) | (node.in.degree == 0)) & (fdr <= FDR)]
+  key.regulators$pval = pval$pval
+  key.regulators$corr.pval = corr.pval
+  
+  key.regulators$regulators = background.genes[(corr.pval <= treshold.pval)]
+  key.regulators$global.regulators = background.genes[((node.degree > (mean.node.degree + 2*stddev.node.degree)) | (node.in.degree == 0)) & (corr.pval <= treshold.pval)]
   key.regulators$local.regulators = setdiff(key.regulators$regulators, key.regulators$global.regulators)
   
   return(key.regulators)
@@ -191,14 +193,14 @@ all.genesets = lapply(all.genesets, function(x,g){
 },g)
 
 all.scores = lapply(all.genesets, function(x, g){
-  tmp = regulatorAnalysis.undirected_weighted(g, x, h = 3, n = 100, FDR = 0.05)
+  tmp = regulatorAnalysis.undirected_weighted(g, x, h = 3, n = 100)
   
   tmp1 = join_all(list(tmp$scores %>%
                          CovariateAnalysis::rownameToFirstColumn('Gene.ID') %>%
                          dplyr::rename(Scores = DF),
-                       tmp$fdr %>%
+                       tmp$corr.pval %>%
                          CovariateAnalysis::rownameToFirstColumn('Gene.ID') %>%
-                         dplyr::rename(FDR = DF)),
+                         dplyr::rename(corr.pval = DF)),
                   type = 'full')
   
   tmp1$regulator = FALSE
