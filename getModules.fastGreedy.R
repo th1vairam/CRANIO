@@ -67,6 +67,7 @@ filteredModules = geneModules %>%
   dplyr::summarise(counts = length(unique(Gene.ID))) %>%
   dplyr::filter(counts >= min.mod.sz)
 geneModules$moduleNumber[!(geneModules$moduleNumber %in% filteredModules$moduleNumber)] = 0
+geneModules$moduleNumber = as.factor(geneModules$moduleNumber) %>% unclass %>% as.numeric()
 geneModules$moduleLabel = WGCNA::labels2colors(geneModules$moduleNumber)
 
 # Find modularity (Q) of the network
