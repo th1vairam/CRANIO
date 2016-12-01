@@ -19,6 +19,11 @@ mod.summary = mod %>%
   summarise(count = n()) %>%
   arrange(desc(count))
 
+tmp = filter(mod.summary, moduleLabel != 'turquoise')
+p = ggplot(tmp, aes(count)) + geom_histogram()
+p = p + theme_bw() + xlab('Module Size') + ylab('Number of Modules')
+p
+
 # Get enrichment results for modules
 enrich.results = downloadFile('syn7460634') %>%
   filter(!is.na(Category))
@@ -58,12 +63,12 @@ de.gene.scores = downloadFile('syn7477203') %>%
   left_join(cranio.gs) %>%
   dplyr::arrange(desc(global.regulator), desc(Scores))
 
-# Get variants enriched gene scores
-var.gene.scores = downloadFile('syn7477205') %>%
-  dplyr::rename(ensembl_gene_id = Gene.ID) %>%
-  left_join(mod) %>%
-  left_join(cranio.gs) %>%
-  dplyr::arrange(desc(global.regulator), desc(Scores))
+# # Get variants enriched gene scores
+# var.gene.scores = downloadFile('syn7477205') %>%
+#   dplyr::rename(ensembl_gene_id = Gene.ID) %>%
+#   left_join(mod) %>%
+#   left_join(cranio.gs) %>%
+#   dplyr::arrange(desc(global.regulator), desc(Scores))
 
 # Get node degree
 node.degree = igraph::degree(g) %>%
