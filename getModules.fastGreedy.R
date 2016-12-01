@@ -1,79 +1,88 @@
-#!/usr/bin/env Rscript
-
-# Function to get modules from network adjacency matrix (from synapse as rda file)
-# Get arguments from comman line
-args = c('syn5700531')
-
-# Clear R console screen output
-cat("\014")
+# Function to get bicNetworks from synapse and find modules and push results back to synapse
 
 # Load libraries
-library(synapseClient)
+library(data.table)
+library(tidyr)
+library(plyr)
 library(dplyr)
-library(WGCNA)
-library(tools)
 library(stringr)
+
 library(igraph)
+library(metanetwork)
 
-# Needs the dev branch
-library(rGithubClient)
+library(synapseClient)
+library(knitr)
+library(githubr)
 
-# login to synapse
 synapseLogin()
 
-# Get github links for provenance
-thisFileName = 'getModules.fastGreedy.R'
+# Set run parameters
+max.mod.sz = 500
+min.mod.sz = 20
 
-# Github link
-thisRepo <- getRepo(repository = "th1vairam/CRANIO", 
-                    ref="branch", 
-                    refName='moduleAnal')
+# Get latest commit of the executable from github (for provenance)
+thisRepo <- githubr::getRepo(repository = "th1vairam/CRANIO", ref="branch", refName='moduleAnal')
+thisFile <- githubr::getPermlink(repository = thisRepo, repositoryPath= 'getModules.fastGreedy.R')
 
-thisFile <- getPermlink(repository = thisRepo,
-                        repositoryPath=paste0(thisFileName))
+# Get all bicNetworks.rda from the source project
+bic.id = 'syn7342818'
 
-# Synapse specific parameters
-activityName = 'Module Identification'
-activityDescription = 'Clustering network genes in to modules using fast greedy algorithm of igraph'
+# Get network from synapse
+net.obj = synapseClient::synGet(bic.id)
+load(net.obj@filePath)
 
-# Get network from synapse (rda format)
-NET_OBJ = synapseClient::synGet(args[1])
-FNAME = tools::file_path_sans_ext(NET_OBJ$properties$name)
-parentId = NET_OBJ$properties$parentId
+# Get the adjacency matrix
+adj <- bicNetworks$network
 
-# Load sparse network
-load(NET_OBJ@filePath)
-
-# Convert lsparseNetwork to igraph graph object
-g = igraph::graph.adjacency(sparseNetwork, mode = 'undirected', weighted = T, diag = F)
-
-# Get modules using fast.greedy method (http://arxiv.org/abs/cond-mat/0408187)
+# Get modules
+g = graph_from_adjacency_matrix(adj, mode = 'upper', weighted = NULL, diag = FALSE)
 mod = igraph::fastgreedy.community(g)
-collectGarbage()
 
 # Get individual clusters from the igraph community object
-clust.numLabels = igraph::membership(mod)
-collectGarbage()
+geneModules = igraph::membership(mod) %>%
+  unclass %>%
+  as.data.frame %>%
+  plyr::rename(c('.' = 'moduleNumber'))
 
-# Change cluster number to color labels
-labels = WGCNA::labels2colors(clust.numLabels)
+geneModules = cbind(data.frame(Gene.ID = rownames(geneModules)),
+                    geneModules)              
 
-# Get results
-geneModules = data.frame(GeneIDs = V(g)$name,
-                         moduleNumber = as.numeric(clust.numLabels), 
-                         modulelabels = labels)
+# Iteratively split modules that of maximum size mx.sz
+count = 1
+max.mod.num = max(geneModules$moduleNumber)
+while(count <= max.mod.num){
+  if (sum(geneModules$moduleNumber == count) > max.mod.sz){
+    sg = induced_subgraph(g, V(g)$name %in% geneModules$Gene.ID[geneModules$moduleNumber == count])
+    sg.mod = igraph::fastgreedy.community(sg) %>% membership
+    geneModules[names(sg.mod), 'moduleNumber'] = sg.mod + max.mod.num
+    max.mod.num = max(geneModules$moduleNumber)
+  }
+  count = count + 1
+  cat(count);cat('\n')
+}
+
+# Rename modules with size less than min module size to 0
+filteredModules = geneModules %>% 
+  dplyr::group_by(moduleNumber) %>%
+  dplyr::summarise(counts = length(unique(Gene.ID))) %>%
+  dplyr::filter(counts >= min.mod.sz)
+geneModules$moduleNumber[!(geneModules$moduleNumber %in% filteredModules$moduleNumber)] = 0
+geneModules$moduleLabel = WGCNA::labels2colors(geneModules$moduleNumber)
+
+# Find modularity (Q) of the network
+Q <- metanetwork::compute.Modularity(adj, geneModules, method = 'Newman1')
+NQ <- metanetwork::compute.LocalModularity(adj, geneModules)
+Qds <- metanetwork::compute.ModularityDensity(adj, geneModules)
+# MQ <- metanetwork::compute.ModuleQualityMetric(adj, geneModules)
 
 # Write results to synapse
-algo = str_replace_all(algorithm(mod), '[^[:alnum:]]', '_')
-
-write.table(geneModules, paste(FNAME,algo,'tsv',sep='.'), sep='\t', row.names=F, quote=F)
-MOD_OBJ = File(paste(FNAME,algo,'tsv',sep='.'), name = paste(FNAME,algo,'Modules'), parentId = parentId)
-annotations(MOD_OBJ) = annotations(NET_OBJ)
-MOD_OBJ@annotations$fileType = 'tsv'
-MOD_OBJ@annotations$moduleMethod = paste('igraph',algo,sep=':')
-MOD_OBJ@annotations$modularity = modularity(mod)
-MOD_OBJ = synStore(MOD_OBJ, 
-                   executed = thisFile,
-                   used = NET_OBJ,
-                   activityName = activityName,
-                   activityDescription = activityDescription)
+algo = 'igraph.fast_greedy'
+write.table(geneModules, file = paste0(algo,'.modules.tsv'), row.names=F, quote=F, sep = '\t')
+obj = synapseClient::File(paste0(algo,'.modules.tsv'), name = paste('Modules',algo), parentId = net.obj@properties$parentId)
+synapseClient::annotations(obj) = list('algorithm' = algo,
+                                       'Q' = Q,
+                                       'NQ' = NQ,
+                                       'Qds' = Qds,
+                                       'fileType' = 'tsv',
+                                       'resultsType' = 'modules')
+obj = synapseClient::synStore(obj, used = net.obj, executed = thisFile, activityName = 'Module Identification')
