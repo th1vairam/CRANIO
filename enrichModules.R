@@ -126,7 +126,7 @@ MOD = merge(MOD, ensg2hgnc, by.x = 'Gene.ID', by.y = 'ensembl_gene_id', all.x=T)
 
 ############################################################################################################
 #### Filter gene list ####
-GeneSets = c(GeneSets.Enrichr, GeneSets.CM, GeneSets.Cranio)
+GeneSets = c(GeneSets.Enrichr, GeneSets.Cranio)
 GeneSets = filterGeneSets(GeneSets, backGroundGenes, minSize = 10, maxSize = 1000)
 ############################################################################################################
 
