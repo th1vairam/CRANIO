@@ -12,7 +12,7 @@ synapseLogin()
 
 knit2synapse::knitToFolderEntity(file = "./covariatesAnalysis_validCohort.Rmd",
                                  parentId = "syn2820780",
-                                 entityName = 'Case-control and sub-type differential expression (validation cohort)')
+                                 entityName = "Case control and subtype differential expression (validation cohort)")
 ```
 
 ```{r libs, echo=FALSE, warning=FALSE, message=FALSE, include=FALSE}
@@ -470,7 +470,7 @@ p
 Differential expression is performed on the primary variable by controlling for covariates identified above
 
 Genes that are differentially expressed at an FDR <= 0.05 are
-```{r diff.exp, fig.height=6, fig.width=8, cache=FALSE}
+```{r diff.exp1, fig.height=6, fig.width=8, cache=FALSE}
 # Get design matrix
 COVARIATES$Diagnosis = as.character(COVARIATES$Diagnosis)
 COVARIATES$Diagnosis[COVARIATES$Diagnosis != 'Control'] = 'Cranio'
@@ -534,7 +534,7 @@ p
 ```
 
 ### Associate differential expression results with gc content, gene length and average expression
-```{r associate.de, fig.height=10, fig.width=15}
+```{r associate.de, fig.height=6, fig.width=15}
 pl = list()
 pl[[1]] = ggplot(DE1, aes(x = log10(gene.length), y = logFC, color = Direction)) + geom_point() 
 pl[[1]] = pl[[1]] + geom_smooth(method = 'loess', inherit.aes = FALSE, aes(x = log10(gene.length), y = logFC))
@@ -574,7 +574,7 @@ all.annotations = list(
 )
 
 # Code
-CODE <- Folder(name = "Case-control and sub-type differential expression (validation cohorts)", parentId = parentId)
+CODE <- Folder(name = "Case control and subtype differential expression (validation cohort)", parentId = parentId)
 annotations(CODE) = all.annotations
 CODE <- synStore(CODE)
 
