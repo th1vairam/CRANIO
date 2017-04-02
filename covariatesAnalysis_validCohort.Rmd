@@ -95,13 +95,12 @@ METADATA.PICARD <- read.table(synGet(METADATA.PICARD_ID)@filePath,sep = '\t', he
                 Sample_Name = as.numeric(Sample_Name))
 
 # Get metadata
-METADATA_ID <- 'syn7486948'
+METADATA_ID <- 'syn8548351'
 ALL_USED_IDs[length(ALL_USED_IDs)+1] = METADATA_ID
 METADATA <- synTableQuery(paste('select * from', METADATA_ID))@values %>%
   dplyr::rename(SampleID = Sample_ID) %>%
   dplyr::left_join(METADATA.MATCH) %>%
   dplyr::left_join(METADATA.PICARD)
-rownames(METADATA) = METADATA$Sample_Name
 
 # Get gene specific parameters from synapse
 GENE.PARAM = downloadFile('syn8449369')
@@ -119,18 +118,19 @@ rownames(GENE.GC) = GENE.GC$ensembl_gene_id
 # Remove samples with no Sex and Diagnosis information
 METADATA <- METADATA %>%
   filter(Sample_Name %in% colnames(COUNT)) %>%
-  filter(!is.na(Sex), !is.na(Diagnosis)) %>%
-  filter(!(Sample_Name %in% c('163541', '163707'))) %>%
+  filter(!is.na(Sex), !is.na(Diagnosis), !is.na(Sample_Name),
+         Age_at_Collection != 'xxx',
+         Days_originally_grown != 'xxx') %>%
+  dplyr::mutate(Diagnosis = factor(Diagnosis,
+                                   levels = c("Control", "Coronal", "Coronal ", "Coronal Synostosis-L", "Coronal Synostosis-R", 
+                                              "Lambdoid", "Lambdoid-L", "Lambdoid-R", "Metopic", "Sagittal"),
+                                   labels = c("Control" = "Control", "Coronal" = "Coronal", "Coronal " = "Coronal", 
+                                              "Coronal Synostosis-L" = "Coronal", "Coronal Synostosis-R" = "Coronal", 
+                                              "Lambdoid" = "Lambdoid", "Lambdoid-L" = "Lambdoid", "Lambdoid-R" = "Lambdoid", 
+                                              "Metopic" = "Metopic", "Sagittal" = "Sagittal"))) %>%
+  droplevels() %>%
+# filter(!(Sample_Name %in% c('163541', '163707'))) %>%
   as.data.frame()
-
-METADATA$Diagnosis = factor(METADATA$Diagnosis,
-                            levels = c("Control", "Coronal", "Coronal ", "Coronal Synostosis-L", "Coronal Synostosis-R", 
-                                       "Lambdoid", "Lambdoid-L", "Lambdoid-R", "Metopic", "Sagittal"),
-                            labels = c("Control" = "Control", "Coronal" = "Coronal", "Coronal " = "Coronal", 
-                                       "Coronal Synostosis-L" = "Coronal", "Coronal Synostosis-R" = "Coronal", 
-                                       "Lambdoid" = "Lambdoid", "Lambdoid-L" = "Lambdoid", "Lambdoid-R" = "Lambdoid", 
-                                       "Metopic" = "Metopic", "Sagittal" = "Sagittal")) %>%
-  droplevels()
 ```
 
 ```{r preprocess.data1,cache=TRUE}
@@ -143,16 +143,17 @@ COUNT = COUNT[,indToRetain]
 rownames(METADATA) = METADATA$Sample_Name
 METADATA = METADATA[indToRetain,]
 ```
-`r dim(COUNT)[2]` samples from the validation cohorts are used for tha analysis. Following sample are removed `r paste(removedIDs, collapse = ',')`
+`r dim(COUNT)[2]` samples from the validation cohorts are used for the analysis. Following sample are removed `r paste(removedIDs, collapse = ',')` from analysis for missing key metadata
 
 ### Covariate clustering
 Determine relationship between covariates
 ```{r covariates.clustering, cache=TRUE}
 primaryVariable <- "Diagnosis"
-FactorCovariates <- c("Plate", "Sex", "Batch", "Diagnosis")
-ContCovariates <- c("RNA_Days_to_Harvest", "PF_BASES", "PF_ALIGNED_BASES", "PCT_CODING_BASES", "PCT_UTR_BASES",
-                    "PCT_INTRONIC_BASES", "PCT_INTERGENIC_BASES", "PCT_MRNA_BASES", "PCT_USABLE_BASES", "PCT_CORRECT_STRAND_READS",
-                    "MEDIAN_CV_COVERAGE", "MEDIAN_5PRIME_BIAS", "MEDIAN_3PRIME_BIAS", "MEDIAN_5PRIME_TO_3PRIME_BIAS")
+FactorCovariates <- c("Plate", "Sex", "Collection_Location", "Batch", "Diagnosis")
+ContCovariates <- c("Age_at_Collection", "Days_originally_grown", "Days_from_Growth_Flask_to_Test_Flask" , "RNA_days_to_Harvest",
+                    "PF_BASES", "PF_ALIGNED_BASES", "PCT_CODING_BASES", "PCT_UTR_BASES",
+                    "PCT_INTRONIC_BASES", "PCT_INTERGENIC_BASES", "PCT_MRNA_BASES", "PCT_USABLE_BASES", 
+                    "PCT_CORRECT_STRAND_READS", "MEDIAN_CV_COVERAGE", "MEDIAN_5PRIME_TO_3PRIME_BIAS")
 
 # Find inter relation between factor covariates
 COVARIATES = METADATA[,c(FactorCovariates,ContCovariates),drop=F]
@@ -195,13 +196,44 @@ PROCESSED_COUNTS = getGeneFilteredGeneExprMatrix(COUNT[genesToAnalyze, ],
 ```
 Processing `r dim(PROCESSED_COUNTS$filteredExprMatrix)[1]` genes in `r dim(PROCESSED_COUNTS$filteredExprMatrix)[2]` samples
 
+### Outlier analysis
+Clustering of logCPM (unadjusted)
+```{r decompse.normalise.data1.1, fig.height=6, fig.width=8, results='asis'}
+# Find principal components of expression to plot
+EXPR = voom(PROCESSED_COUNTS$filteredExprMatrix$counts)
+PC <- prcomp(EXPR$E, scale.=T, center = T)
+
+# Plot first 2 PCs
+plotdata <- data.frame(SampleID=rownames(PC$rotation), 
+                       PC1=PC$rotation[,1], 
+                       PC2=PC$rotation[,2])
+
+plotdata <- left_join(plotdata, rownameToFirstColumn(COVARIATES, 'SampleID')) %>%
+  dplyr::mutate(label = SampleID)
+plotdata$label[!(plotdata$label %in% c('163707', '163541'))] = ''
+
+p <- ggplot(plotdata, aes(x=PC1, y=PC2))
+p <- p + geom_point(aes(color=Batch, shape=Diagnosis))
+p <- p + theme_bw() + theme(legend.position="right")
+p <- p + geom_text(aes(label= label), size=4, hjust=1)
+p
+```
+
+```{r remove.samples, fig.height=6, fig.width=8, results='asis'}
+indToRemove = c('163707', '163541')
+indToRetain = setdiff(rownames(COVARIATES), indToRemove)
+NEW.COUNTS = PROCESSED_COUNTS$filteredExprMatrix$counts[, indToRetain]
+COVARIATES = COVARIATES[indToRetain,]
+```
+Removing following samples as outliers `r paste(indToRemove, collapse = ', ')`
+
 ### Normalisation (with NULL)
 Initial normalisation usign cqn and dispersion control with voom (with NULL design)
 ```{r initial.voom.normalisation, fig.height=5, fig.width=5}
 # Compute offset for gene length and gc content
-CQN.GENE_EXPRESSION = cqn(PROCESSED_COUNTS$filteredExprMatrix$counts, 
-                          x = GENE.GC[rownames(PROCESSED_COUNTS$filteredExprMatrix), 'percentage_gc_content'],
-                          lengths = GENE.LEN[rownames(PROCESSED_COUNTS$filteredExprMatrix), 'gene.length'],
+CQN.GENE_EXPRESSION = cqn(NEW.COUNTS, 
+                          x = GENE.GC[rownames(NEW.COUNTS), 'percentage_gc_content'],
+                          lengths = GENE.LEN[rownames(NEW.COUNTS), 'gene.length'],
                           lengthMethod = "smooth", 
                           verbose = FALSE)
 
@@ -211,12 +243,12 @@ log.mat = apply(CQN.GENE_EXPRESSION$y+CQN.GENE_EXPRESSION$offset, 1, function(x)
   std.dev = sd(x, na.rm = T)
   return((x < (mn-3*std.dev)) | (x > (mn+3*std.dev)))
 }) %>% t
-PROCESSED_COUNTS$filteredExprMatrix$counts[log.mat] = 0
+NEW.COUNTS[log.mat] = 0
 
 # Re-compute offset for gene length and gc content
-CQN.GENE_EXPRESSION = cqn(PROCESSED_COUNTS$filteredExprMatrix$counts, 
-                          x = GENE.GC[rownames(PROCESSED_COUNTS$filteredExprMatrix), 'percentage_gc_content'],
-                          lengths = GENE.LEN[rownames(PROCESSED_COUNTS$filteredExprMatrix), 'gene.length'],
+CQN.GENE_EXPRESSION = cqn(NEW.COUNTS, 
+                          x = GENE.GC[rownames(NEW.COUNTS), 'percentage_gc_content'],
+                          lengths = GENE.LEN[rownames(NEW.COUNTS), 'gene.length'],
                           lengthMethod = "smooth", 
                           verbose = FALSE)
 
@@ -233,8 +265,8 @@ Coexpression of genes
 cr = cor(t(CQN.GENE_EXPRESSION$y+CQN.GENE_EXPRESSION$offset))
 hist(cr, main = 'Distribution of correlation between genes', xlab = 'Correlation')
 ```
-### Outlier analysis
-Clustering of voom adjusted data (with NULL design)
+### Expression decomposition
+Clustering of logcpm+offset
 ```{r decompse.normalise.data1.1, fig.height=6, fig.width=8, results='asis'}
 # Find principal components of expression to plot
 PC <- prcomp(CQN.GENE_EXPRESSION$y+CQN.GENE_EXPRESSION$offset, scale.=T, center = T)
@@ -314,7 +346,7 @@ while(length(residualSigCovars$significantCovars)!=0 && loopCount <= 20){
   DM1$design = DM1$design[,linColumnFinder(DM1$design)$indepCols]
   
   # Estimate voom weights for dispersion control
-  VOOM.GENE_EXPRESSION = voom(PROCESSED_COUNTS$filteredExprMatrix$counts, design=DM1$design, plot=F)
+  VOOM.GENE_EXPRESSION = voom(NEW.COUNTS, design=DM1$design, plot=F)
   
   # Fit linear model using new weights and new design
   VOOM.ADJUSTED.FIT = lmFit(CQN.GENE_EXPRESSION$y+CQN.GENE_EXPRESSION$offset,
@@ -408,6 +440,11 @@ gc()
 ### Differential expression analysis (between sutre types)
 Differential expression is performed on the primary variable by controlling for covariates identified above
 
+Following model was used
+
+Gx = Diagnosis + RNA\_days\_to\_Harvest + Diagnosis x RNA\_days\_to\_Harvest + Batch + Sex + Age\_at\_Collection + 
+    PCT\_CODING\_BASES + PCT\_CORRECT\_STRAND\_READS + Days\_originally\_grown + MEDIAN\_CV\_COVERAGE + MEDIAN\_5PRIME\_TO\_3PRIME\_BIAS
+
 Genes that are differentially expressed at an FDR <= 0.05 are
 ```{r diff.exp, fig.height=16, fig.width=18, cache=FALSE}
 # Get design matrix
@@ -415,7 +452,7 @@ DESIGN = getDesignMatrix(COVARIATES[, c(primaryVariable, postAdjustCovars), drop
 DESIGN$design = DESIGN$design[,linColumnFinder(DESIGN$design)$indepCols]
 
 # Estimate voom weights for dispersion control
-VOOM.WEIGHTS = voom(PROCESSED_COUNTS$filteredExprMatrix$counts, design=DESIGN$design, plot=F)
+VOOM.WEIGHTS = voom(NEW.COUNTS, design=DESIGN$design, plot=F)
 
 # Fit linear model using new weights and new design
 FIT = lmFit(CQN.GENE_EXPRESSION$y+CQN.GENE_EXPRESSION$offset,
@@ -428,89 +465,26 @@ contrast = paste0('Diagnosis',levels(COVARIATES$Diagnosis)) %>%
   apply(2, function(x){
     paste(x, collapse = '-')
   }) %>%
+  c('DiagnosisControl-(DiagnosisCoronal+DiagnosisLambdoid+DiagnosisMetopic+DiagnosisSagittal)/4',
+    'RNA_days_to_Harvest') %>%
   makeContrasts(contrasts=.,
                 levels = colnames(FIT$coefficients))
 FIT.CONTR = contrasts.fit(FIT, contrasts=contrast)
 FIT.CONTR = eBayes(FIT.CONTR)
 
 # Get differnetial expression
-DE = lapply(1:10, function(i, FIT){
+DE = lapply(1:11, function(i, FIT){
   topTable(FIT, coef=i, number = 50000, confint = T) %>%
     rownameToFirstColumn('ensembl_gene_id')
 }, FIT.CONTR)
-names(DE) = colnames(contrast)
+names(DE) = colnames(contrast)[1:11]
 
-DE = DE %>% 
+DE1 = DE %>% 
   rbindlist(idcol = 'Comparison') %>%
-  dplyr::mutate(Comparison = gsub('Diagnosis','',Comparison)) %>%
-  tidyr::separate(Comparison, c('reference','against'), sep = '-') %>%
-  left_join(GENE.PARAM %>%
-              dplyr::select(ensembl_gene_id, hgnc_symbol, percentage_gc_content, gene.length) %>%
-              unique()) %>%
-  dplyr::mutate(Direction = logFC/abs(logFC),
-                Direction = factor(Direction, c(-1,1), c('-1' = 'DOWN', '1' = 'UP')),
-                Direction = as.character(Direction))
-DE$Direction[DE$adj.P.Val > 0.05] = 'NONE'
-
-writeLines('Differentially expressed genes at an FDR 0.05')
-tmp = DE %>%
-  dplyr::select(ensembl_gene_id, reference, against, Direction) %>%
-  group_by(reference, against, Direction) %>%
-  dplyr::summarise(FDR_0_05 = length(unique(ensembl_gene_id))) %>%
-  spread(Direction, FDR_0_05) 
-kable(tmp)
-
-p = ggplot(DE, aes(y = -log10(adj.P.Val), x = logFC, color = Direction)) + geom_point() + xlim(c(-1,1))
-p = p + scale_color_manual(values = c('green','grey','red'))
-p = p + facet_grid(reference+.~against, scales = 'fixed')
-p
-```
-
-### Differential expression analysis (control vs cranio)
-Differential expression is performed on the primary variable by controlling for covariates identified above
-
-Genes that are differentially expressed at an FDR <= 0.05 are
-```{r diff.exp1, fig.height=6, fig.width=8, cache=FALSE}
-# Get design matrix
-COVARIATES$Diagnosis = as.character(COVARIATES$Diagnosis)
-COVARIATES$Diagnosis[COVARIATES$Diagnosis != 'Control'] = 'Cranio'
-COVARIATES$Diagnosis = factor(COVARIATES$Diagnosis)
-DESIGN = getDesignMatrix(COVARIATES[, c(primaryVariable, postAdjustCovars), drop = F], Intercept = F)
-DESIGN$design = DESIGN$design[,linColumnFinder(DESIGN$design)$indepCols]
-
-# Estimate voom weights for dispersion control
-VOOM.WEIGHTS = voom(PROCESSED_COUNTS$filteredExprMatrix$counts, design=DESIGN$design, plot=F)
-
-# Fit linear model using new weights and new design
-FIT = lmFit(CQN.GENE_EXPRESSION$y+CQN.GENE_EXPRESSION$offset,
-            design = DESIGN$design,
-            weights = VOOM.WEIGHTS$weights)
-
-# Get residual gene expression
-RESIDUAL.GENE_EXPRESSION = residuals.MArrayLM(FIT, CQN.GENE_EXPRESSION$y+CQN.GENE_EXPRESSION$offset)
-RESIDUAL.GENE_EXPRESSION = RESIDUAL.GENE_EXPRESSION + FIT$coefficients[,c("DiagnosisControl", "DiagnosisCranio")] %*% t(DESIGN$design[,c("DiagnosisControl", "DiagnosisCranio")])
-
-# Fit contrast
-contrast = paste0('Diagnosis',levels(COVARIATES$Diagnosis)) %>%
-  combn(2) %>%
-  apply(2, function(x){
-    paste(x, collapse = '-')
-  }) %>%
-  makeContrasts(contrasts=.,
-                levels = colnames(FIT$coefficients))
-FIT.CONTR = contrasts.fit(FIT, contrasts=contrast)
-FIT.CONTR = eBayes(FIT.CONTR)
-
-# Get differnetial expression
-DE1 = lapply(1, function(i, FIT){
-  topTable(FIT, coef=i, number = 50000, confint = T) %>%
-    rownameToFirstColumn('ensembl_gene_id')
-}, FIT.CONTR)
-names(DE1) = colnames(contrast)
-
-DE1 = DE1 %>% 
-  rbindlist(idcol = 'Comparison') %>%
-  dplyr::mutate(Comparison = gsub('Diagnosis','',Comparison)) %>%
+  dplyr::mutate(Comparison = gsub('Diagnosis','',Comparison),
+                Comparison = gsub('[^[:alnum:]]','_', Comparison),
+                Comparison = gsub('_Coronal_Lambdoid_Metopic_Sagittal__4', 'Cranio', Comparison)) %>%
+  tidyr::separate(Comparison, c('reference','against'), sep = '_') %>%
   left_join(GENE.PARAM %>%
               dplyr::select(ensembl_gene_id, hgnc_symbol, percentage_gc_content, gene.length) %>%
               unique()) %>%
@@ -521,34 +495,68 @@ DE1$Direction[DE1$adj.P.Val > 0.05] = 'NONE'
 
 writeLines('Differentially expressed genes at an FDR 0.05')
 tmp = DE1 %>%
-  dplyr::select(ensembl_gene_id, Comparison, Direction) %>%
-  group_by(Comparison, Direction) %>%
+  dplyr::select(ensembl_gene_id, reference, against, Direction) %>%
+  group_by(reference, against, Direction) %>%
   dplyr::summarise(FDR_0_05 = length(unique(ensembl_gene_id))) %>%
+  dplyr::filter(Direction != 'NONE') %>%
   spread(Direction, FDR_0_05) 
 kable(tmp)
 
 p = ggplot(DE1, aes(y = -log10(adj.P.Val), x = logFC, color = Direction)) + geom_point() + xlim(c(-1,1))
 p = p + scale_color_manual(values = c('green','grey','red'))
-p = p + facet_grid(.~Comparison, scales = 'fixed')
+p = p + facet_grid(reference+.~against, scales = 'fixed')
 p
+```
+### Differential expression wrt RNA days to harvest
+```{r rna.harvest}
+# Get differnetial expression
+DE2 = topTable(FIT.CONTR, coef=12, number = 50000, confint = T) %>%
+  rownameToFirstColumn('ensembl_gene_id') %>%
+  dplyr::mutate(reference = 'RNA_days_to_Harvest') %>%
+  left_join(GENE.PARAM %>%
+              dplyr::select(ensembl_gene_id, hgnc_symbol, percentage_gc_content, gene.length) %>%
+              unique()) %>%
+  dplyr::mutate(Direction = logFC/abs(logFC),
+                Direction = factor(Direction, c(-1,1), c('-1' = 'DOWN', '1' = 'UP')),
+                Direction = as.character(Direction))
+DE2$Direction[DE2$adj.P.Val > 0.05] = 'NONE'
+
+writeLines('Differentially expressed genes at an FDR 0.05')
+tmp = DE2 %>%
+  dplyr::select(ensembl_gene_id, reference, Direction) %>%
+  group_by(reference, Direction) %>%
+  dplyr::summarise(FDR_0_05 = length(unique(ensembl_gene_id))) %>%
+  dplyr::filter(Direction != 'NONE') %>%
+  spread(Direction, FDR_0_05) 
+kable(tmp)
+
+p = ggplot(DE2, aes(y = -log10(adj.P.Val), x = logFC, color = Direction)) + geom_point() + xlim(c(-1,1))
+p = p + scale_color_manual(values = c('green','grey','red')) + theme(legend.position = 'top')
+p = p + facet_grid(.~reference, scales = 'fixed')
+p
+
+DE = rbindlist(list(DE1, DE2), use.names = T, fill = T)
 ```
 
 ### Associate differential expression results with gc content, gene length and average expression
 ```{r associate.de, fig.height=6, fig.width=15}
 pl = list()
-pl[[1]] = ggplot(DE1, aes(x = log10(gene.length), y = logFC, color = Direction)) + geom_point() 
+pl[[1]] = ggplot(DE1 %>% dplyr::filter(reference == 'Control', against == 'Cranio'), 
+                 aes(x = log10(gene.length), y = logFC, color = Direction)) + geom_point() 
 pl[[1]] = pl[[1]] + geom_smooth(method = 'loess', inherit.aes = FALSE, aes(x = log10(gene.length), y = logFC))
-pl[[1]] = pl[[1]] + facet_grid(Comparison~.) + scale_color_manual(values = c('green','grey','red'))
+pl[[1]] = pl[[1]] + facet_grid(reference~.+against) + scale_color_manual(values = c('grey'))
 pl[[1]] = pl[[1]] + theme(legend.position = 'top')
 
-pl[[2]] = ggplot(DE1, aes(x = percentage_gc_content, y = logFC, color = Direction)) + geom_point()
+pl[[2]] = ggplot(DE1 %>% dplyr::filter(reference == 'Control', against == 'Cranio'), 
+                 aes(x = percentage_gc_content, y = logFC, color = Direction)) + geom_point()
 pl[[2]] = pl[[2]] + geom_smooth(method = 'loess', inherit.aes = FALSE, aes(x = percentage_gc_content, y = logFC))
-pl[[2]] = pl[[2]] + facet_grid(Comparison~.) + scale_color_manual(values = c('green','grey','red'))
+pl[[2]] = pl[[2]] + facet_grid(reference~.+against) + scale_color_manual(values = c('grey'))
 pl[[2]] = pl[[2]] + theme(legend.position = 'top')
 
-pl[[3]] = ggplot(DE1, aes(x = AveExpr, y = logFC, color = Direction)) + geom_point()
+pl[[3]] = ggplot(DE1 %>% dplyr::filter(reference == 'Control', against == 'Cranio'), 
+                 aes(x = AveExpr, y = logFC, color = Direction)) + geom_point()
 pl[[3]] = pl[[3]] + geom_smooth(method = 'loess', inherit.aes = FALSE, aes(x = AveExpr, y = logFC))
-pl[[3]] = pl[[3]] + facet_grid(Comparison~.) + scale_color_manual(values = c('green','grey','red'))
+pl[[3]] = pl[[3]] + facet_grid(reference~.+against) + scale_color_manual(values = c('grey'))
 pl[[3]] = pl[[3]] + theme(legend.position = 'top')
 
 multiplot(plotlist = pl, cols = 3)
