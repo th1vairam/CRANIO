@@ -437,12 +437,12 @@ dev.off()
 gc()
 ```
 
-### Differential expression analysis (between sutre types)
+### Differential expression analysis
 Differential expression is performed on the primary variable by controlling for covariates identified above
 
 Following model was used
 
-Gx = Diagnosis + RNA\_days\_to\_Harvest + Diagnosis x RNA\_days\_to\_Harvest + Batch + Sex + Age\_at\_Collection + 
+Gx = Diagnosis + RNA\_days\_to\_Harvest + Batch + Sex + Age\_at\_Collection + 
     PCT\_CODING\_BASES + PCT\_CORRECT\_STRAND\_READS + Days\_originally\_grown + MEDIAN\_CV\_COVERAGE + MEDIAN\_5PRIME\_TO\_3PRIME\_BIAS
 
 Genes that are differentially expressed at an FDR <= 0.05 are
@@ -483,7 +483,8 @@ DE1 = DE %>%
   rbindlist(idcol = 'Comparison') %>%
   dplyr::mutate(Comparison = gsub('Diagnosis','',Comparison),
                 Comparison = gsub('[^[:alnum:]]','_', Comparison),
-                Comparison = gsub('_Coronal_Lambdoid_Metopic_Sagittal__4', 'Cranio', Comparison)) %>%
+                Comparison = gsub('_Coronal_Lambdoid_Metopic_Sagittal__4', 'Cranio', Comparison),
+                Model = 'Dx+RNADaysToHarvest') %>%
   tidyr::separate(Comparison, c('reference','against'), sep = '_') %>%
   left_join(GENE.PARAM %>%
               dplyr::select(ensembl_gene_id, hgnc_symbol, percentage_gc_content, gene.length) %>%
@@ -512,7 +513,8 @@ p
 # Get differnetial expression
 DE2 = topTable(FIT.CONTR, coef=12, number = 50000, confint = T) %>%
   rownameToFirstColumn('ensembl_gene_id') %>%
-  dplyr::mutate(reference = 'RNA_days_to_Harvest') %>%
+  dplyr::mutate(reference = 'RNA_days_to_Harvest',
+                Model = 'Dx+RNADaysToHarvest') %>%
   left_join(GENE.PARAM %>%
               dplyr::select(ensembl_gene_id, hgnc_symbol, percentage_gc_content, gene.length) %>%
               unique()) %>%
@@ -534,8 +536,86 @@ p = ggplot(DE2, aes(y = -log10(adj.P.Val), x = logFC, color = Direction)) + geom
 p = p + scale_color_manual(values = c('green','grey','red')) + theme(legend.position = 'top')
 p = p + facet_grid(.~reference, scales = 'fixed')
 p
+```
 
-DE = rbindlist(list(DE1, DE2), use.names = T, fill = T)
+### Differential expression analysis 2
+Differential expression is performed on the primary variable by controlling for covariates identified above
+
+Since RNA\_days\_to\_Harvest is also strongly associated (biologically) with the case control differences, we are explicitly modeling hte case-control variations as an interaction effect
+
+Following model was used
+
+Gx = Diagnosis x RNA\_days\_to\_Harvest + Batch + Sex + Age\_at\_Collection + 
+    PCT\_CODING\_BASES + PCT\_CORRECT\_STRAND\_READS + Days\_originally\_grown + MEDIAN\_CV\_COVERAGE + MEDIAN\_5PRIME\_TO\_3PRIME\_BIAS
+
+Genes that are differentially expressed at an FDR <= 0.05 are
+```{r diff.exp2, fig.height=16, fig.width=18, cache=FALSE}
+# Get design matrix
+DESIGN = getDesignMatrix(COVARIATES[, c(primaryVariable, postAdjustCovars), drop = F], Intercept = F)
+ind = grep('Diagnosis', colnames(DESIGN$design))
+DESIGN$design[,ind] = DESIGN$design[,ind] * DESIGN$design[,'RNA_days_to_Harvest']
+colnames(DESIGN$design)[ind] = paste(colnames(DESIGN$design)[ind], 'RNA_days_to_Harvest', sep = '.')
+DESIGN$design = DESIGN$design[,setdiff(colnames(DESIGN$design), 'RNA_days_to_Harvest')]
+DESIGN$design = DESIGN$design[,linColumnFinder(DESIGN$design)$indepCols]
+
+# Estimate voom weights for dispersion control
+VOOM.WEIGHTS = voom(NEW.COUNTS, design=DESIGN$design, plot=F)
+
+# Fit linear model using new weights and new design
+FIT = lmFit(CQN.GENE_EXPRESSION$y+CQN.GENE_EXPRESSION$offset,
+            design = DESIGN$design,
+            weights = VOOM.WEIGHTS$weights)
+
+# Fit contrast
+contrast = paste0('Diagnosis',levels(COVARIATES$Diagnosis),'.RNA_days_to_Harvest') %>%
+  combn(2) %>%
+  apply(2, function(x){
+    paste(x, collapse = '-')
+  }) %>%
+  c('DiagnosisControl.RNA_days_to_Harvest-(DiagnosisCoronal.RNA_days_to_Harvest+DiagnosisLambdoid.RNA_days_to_Harvest+DiagnosisMetopic.RNA_days_to_Harvest+DiagnosisSagittal.RNA_days_to_Harvest)/4') %>%
+  makeContrasts(contrasts=.,
+                levels = colnames(FIT$coefficients))
+FIT.CONTR = contrasts.fit(FIT, contrasts=contrast)
+FIT.CONTR = eBayes(FIT.CONTR)
+
+# Get differnetial expression
+DE = lapply(1:11, function(i, FIT){
+  topTable(FIT, coef=i, number = 50000, confint = T) %>%
+    rownameToFirstColumn('ensembl_gene_id')
+}, FIT.CONTR)
+names(DE) = colnames(contrast)[1:11]
+
+DE3 = DE %>% 
+  rbindlist(idcol = 'Comparison') %>%
+  dplyr::mutate(Comparison = gsub('Diagnosis','',Comparison),
+                Comparison = gsub('.RNA_days_to_Harvest','',Comparison),
+                Comparison = gsub('[^[:alnum:]]','_', Comparison),
+                Comparison = gsub('_Coronal_Lambdoid_Metopic_Sagittal__4', 'Cranio', Comparison),
+                Model = 'DxxRNADaysToHarvest') %>%
+  tidyr::separate(Comparison, c('reference','against'), sep = '_') %>%
+  left_join(GENE.PARAM %>%
+              dplyr::select(ensembl_gene_id, hgnc_symbol, percentage_gc_content, gene.length) %>%
+              unique()) %>%
+  dplyr::mutate(Direction = logFC/abs(logFC),
+                Direction = factor(Direction, c(-1,1), c('-1' = 'DOWN', '1' = 'UP')),
+                Direction = as.character(Direction))
+DE3$Direction[DE3$adj.P.Val > 0.05] = 'NONE'
+
+writeLines('Differentially expressed genes at an FDR 0.05')
+tmp = DE3 %>%
+  dplyr::select(ensembl_gene_id, reference, against, Direction) %>%
+  group_by(reference, against, Direction) %>%
+  dplyr::summarise(FDR_0_05 = length(unique(ensembl_gene_id))) %>%
+  dplyr::filter(Direction != 'NONE') %>%
+  spread(Direction, FDR_0_05) 
+kable(tmp)
+
+p = ggplot(DE3, aes(y = -log10(adj.P.Val), x = logFC, color = Direction)) + geom_point() + xlim(c(-1,1))
+p = p + scale_color_manual(values = c('green','grey','red'))
+p = p + facet_grid(reference+.~against, scales = 'fixed')
+p
+
+DE = rbindlist(list(DE1, DE2, DE3), use.names = T, fill = T)
 ```
 
 ### Associate differential expression results with gc content, gene length and average expression
@@ -652,11 +732,11 @@ annotations(DEXP_OBJ)$dataSubType = 'diffExp'
 DEXP_OBJ = synStore(DEXP_OBJ, activity = synGetActivity(COV_OBJ$properties$id))
 ```
 |  *Results*                                  |  *SynapseID*                     |
-  |  -----------------------------------------  |   ---------                      |
-  |  Covariates                                 |  `r COV_OBJ$properties$id`       |
-  |  Counts (raw)                               |  `r COUNT_OBJ$properties$id`     |
-  |  Counts (lcpm)                              |  `r LCOUNT_OBJ$properties$id`    |
-  |  Offset (for gene length and gc content)    |  `r OFFSET_OBJ$properties$id`    |
-  |  Design Matrix                              |  `r DM_OBJ$properties$id`        |
-  |  Residual Expression (for network analysis) |  `r nEXP_OBJ$properties$id`      |
-  |  Differential Expression                    |  `r DEXP_OBJ$properties$id`      |
+|  -----------------------------------------  |   ---------                      |
+|  Covariates                                 |  `r COV_OBJ$properties$id`       |
+|  Counts (raw)                               |  `r COUNT_OBJ$properties$id`     |
+|  Counts (lcpm)                              |  `r LCOUNT_OBJ$properties$id`    |
+|  Offset (for gene length and gc content)    |  `r OFFSET_OBJ$properties$id`    |
+|  Design Matrix                              |  `r DM_OBJ$properties$id`        |
+|  Residual Expression (for network analysis) |  `r nEXP_OBJ$properties$id`      |
+|  Differential Expression                    |  `r DEXP_OBJ$properties$id`      |
