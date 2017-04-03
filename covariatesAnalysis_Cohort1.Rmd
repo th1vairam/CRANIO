@@ -634,6 +634,43 @@ pl[[3]] = pl[[3]] + theme(legend.position = 'top')
 multiplot(plotlist = pl, cols = 3)
 ```
 
+
+### Pathway enrichment analysis
+```{r enrichment}
+GL_OBJ = synGet('syn4867851')
+ALL_USED_IDs = c(ALL_USED_IDs, GL_OBJ$properties$id)
+load(GL_OBJ@filePath)
+
+gsets = c("GO_Biological_Process", "Reactome_2015", "WikiPathways_2015")
+GeneSets.Enrichr = GeneSets[gsets]
+
+# Download cranio related gene sets from synapse
+GL_OBJ = synGet('syn5752718');
+ALL_USED_IDs = c(ALL_USED_IDs, GL_OBJ$properties$id)
+load(GL_OBJ@filePath)
+
+GeneSets.Cranio = list(Cranio = GeneSets[c("Del-Dup_Osteo", "IGF1", "Synostosis", "Thyroid")])
+GeneSets = c(GeneSets.Enrichr, GeneSets.Cranio)
+GeneSets = lapply(GeneSets, function(x){
+  x = x[setdiff(1:length(x), grep('Mus', names(x)))]
+})
+
+# Get background gene list
+backGroundGenes = unique(DE$hgnc_symbol)
+
+# Get gene list to test
+enrichmentResults = plyr::ddply(DE, .(reference, against, Model), .fun = function(x, backGroundGenes, geneSets){
+  genesToTest = unique(x$hgnc_symbol[x$adj.P.Val <= 0.05])
+  
+  all.results = plyr::ldply(geneSets, .fun = function(y, x, backGroundGenes){
+    plyr::ldply(y, .fun = function(z, x, backGroundGenes){ 
+      fisherEnrichment(x, z, backGroundGenes)
+    }, x, backGroundGenes, .id = 'SetName', .parallel = T, .paropts = list(.packages = c('CovariateAnalysis')))
+  }, genesToTest, backGroundGenes, .id = 'Category', .parallel = T, .paropts = list(.packages = c('CovariateAnalysis'))) %>%
+    dplyr::mutate(fdr = p.adjust(pval))
+}, backGroundGenes, GeneSets, .progress = 'text', .parallel = T, .paropts = list(.packages = c('CovariateAnalysis', 'dplyr')))
+```
+
 ### Store files in synapse
 ```{r synapse.store, include=FALSE, eval=TRUE, cache=FALSE}
 # Set annotations
@@ -721,6 +758,14 @@ DEXP_OBJ = File('CRANIO1_DiffExpression.tsv', name = 'Differential Expression Re
 annotations(DEXP_OBJ) = annotations(CODE)
 annotations(DEXP_OBJ)$dataSubType = 'diffExp'
 DEXP_OBJ = synStore(DEXP_OBJ, activity = synGetActivity(COV_OBJ$properties$id))
+
+# Store enrichment results
+write.table(enrichmentResults, file = 'CRANIO2_EnrichmentAnalysis.tsv', sep = '\t', row.names=F, quote=F)
+ENRICH_OBJ = File('CRANIO2_EnrichmentAnalysis.tsv', name = 'Enrichment Analysis (Differential Expression)', 
+                  parentId = CODE$properties$id)
+annotations(ENRICH_OBJ) = annotations(ENRICH)
+annotations(ENRICH_OBJ)$dataSubType = 'enrichAnlz'
+ENRICH_OBJ = synStore(ENRICH_OBJ, activity = synGetActivity(COV_OBJ$properties$id))
 ```
 |  *Results*                                  |  *SynapseID*                     |
 |  -----------------------------------------  |   ---------                      |
@@ -731,3 +776,4 @@ DEXP_OBJ = synStore(DEXP_OBJ, activity = synGetActivity(COV_OBJ$properties$id))
 |  Design Matrix                              |  `r DM_OBJ$properties$id`        |
 |  Residual Expression (for network analysis) |  `r nEXP_OBJ$properties$id`      |
 |  Differential Expression                    |  `r DEXP_OBJ$properties$id`      |
+|  Enrichment Analysis                        |  `r ENRICH_OBJ$properties$id`    |
