@@ -771,7 +771,7 @@ DEXP_OBJ = synStore(DEXP_OBJ, activity = synGetActivity(COV_OBJ$properties$id))
 write.table(enrichmentResults, file = 'CRANIO2_EnrichmentAnalysis.tsv', sep = '\t', row.names=F, quote=F)
 ENRICH_OBJ = File('CRANIO2_EnrichmentAnalysis.tsv', name = 'Enrichment Analysis (Differential Expression)', 
                   parentId = CODE$properties$id)
-annotations(ENRICH_OBJ) = annotations(ENRICH)
+annotations(ENRICH_OBJ) = annotations(CODE)
 annotations(ENRICH_OBJ)$dataSubType = 'enrichAnlz'
 ENRICH_OBJ = synStore(ENRICH_OBJ, activity = synGetActivity(COV_OBJ$properties$id))
 ```
