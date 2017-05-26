@@ -558,7 +558,7 @@ FIT = lmFit(CQN.GENE_EXPRESSION$E,
 
 # Get residual gene expression
 RESIDUAL.GENE_EXPRESSION = residuals.MArrayLM(FIT, CQN.GENE_EXPRESSION$E)
-varsToAddIn = grep('Diagnosis', colnames(FIT$coefficients), value = T)
+varsToAddIn = grep('.RDH', colnames(FIT$coefficients), value = T)
 RESIDUAL.GENE_EXPRESSION = RESIDUAL.GENE_EXPRESSION +
   (FIT$coefficients[,varsToAddIn] %*% t(FIT$design[,varsToAddIn]))
 

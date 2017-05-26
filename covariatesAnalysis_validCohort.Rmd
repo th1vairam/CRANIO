@@ -73,7 +73,7 @@ thisRepo <- getRepo(repository = "th1vairam/CRANIO", ref="branch", refName='diff
 thisFile <- getPermlink(repository = thisRepo, repositoryPath = thisFileName)
 ```
 ### Data download
-#### Obtain count matrix and metadata from synapse.
+Obtain count matrix and metadata from synapse.
 ```{r download.data, cache=TRUE}
 # Download expression data
 COUNT_ID <- 'syn7477102';
@@ -541,21 +541,27 @@ Differential expression is performed on the primary variable by controlling for 
 
 Since RNA\_days\_to\_Harvest is also strongly associated (biologically) with the case control differences, we are explicitly modeling hte case-control variations as an interaction effect
 
+Also, since we are intrested in the sex variations we are explicitly modeling sex
+
 Following model was used
 
-Gx = Diagnosis x RNA\_days\_to\_Harvest + Batch + Sex + PCT\\_CORRECT\\_STRAND\\_READS + Age\\_at\\_Collection +
+Gx = Diagnosis x RNA\_days\_to\_Harvest x Sex + Batch + PCT\\_CORRECT\\_STRAND\\_READS + Age\\_at\\_Collection +
      PCT\\_UTR\\_BASES + Days\\_originally\\_grown + MEDIAN\\_CV\\_COVERAGE + MEDIAN\\_5PRIME\\_TO\\_3PRIME\\_BIAS +
      PCT\\_INTERGENIC\\_BASES + PCT\\_INTRONIC\\_BASES 
 
 Genes that are differentially expressed at an FDR <= 0.05 are
 ```{r diff.exp2, fig.height=16, fig.width=18, cache=FALSE}
 # Get design matrix
-DESIGN = getDesignMatrix(COVARIATES[, c(primaryVariable, varsInModel), drop = F], Intercept = F)
-ind = grep('Diagnosis', colnames(DESIGN$design))
+COVARIATES$Diagnosis.Sex = factor(paste(COVARIATES$Diagnosis,COVARIATES$Sex, sep = '.'))
+DESIGN = getDesignMatrix(COVARIATES[, c('Diagnosis.Sex', setdiff(postAdjustCovars, 'Sex')), drop = F], Intercept = F)
+ind = grep('Diagnosis.Sex', colnames(DESIGN$design))
 DESIGN$design[,ind] = DESIGN$design[,ind] * DESIGN$design[,'RNA_days_to_Harvest']
 colnames(DESIGN$design)[ind] = paste(colnames(DESIGN$design)[ind], 'RNA_days_to_Harvest', sep = '.')
 DESIGN$design = DESIGN$design[,setdiff(colnames(DESIGN$design), 'RNA_days_to_Harvest')]
 DESIGN$design = DESIGN$design[,linColumnFinder(DESIGN$design)$indepCols]
+colnames(DESIGN$design)[1:10] = c("Control.F.RDH", "Control.M.RDH", "Coronal.F.RDH", "Coronal.M.RDH",
+                                  "Lambdoid.F.RDH", "Lambdoid.M.RDH", "Metopic.F.RDH", "Metopic.M.RDH",
+                                  "Sagittal.F.RDH", "Sagittal.M.RDH")
 
 # Estimate voom weights for dispersion control
 VOOM.WEIGHTS = voom(NEW.COUNTS, design=DESIGN$design, plot=F)
@@ -567,37 +573,40 @@ FIT = lmFit(CQN.GENE_EXPRESSION$E,
 
 # Get residual gene expression
 RESIDUAL.GENE_EXPRESSION = residuals.MArrayLM(FIT, CQN.GENE_EXPRESSION$E)
-varsToAddIn = grep('Diagnosis', colnames(FIT$coefficients), value = T)
+varsToAddIn = grep('.RDH', colnames(FIT$coefficients), value = T)
 RESIDUAL.GENE_EXPRESSION = RESIDUAL.GENE_EXPRESSION +
   (FIT$coefficients[,varsToAddIn] %*% t(FIT$design[,varsToAddIn]))
 
 # Fit contrast
-contrast = paste0('Diagnosis',levels(COVARIATES$Diagnosis),'.RNA_days_to_Harvest') %>%
-  combn(2) %>%
-  apply(2, function(x){
-    paste(x, collapse = '-')
-  }) %>%
-  c('DiagnosisControl.RNA_days_to_Harvest-(DiagnosisCoronal.RNA_days_to_Harvest+DiagnosisLambdoid.RNA_days_to_Harvest+DiagnosisMetopic.RNA_days_to_Harvest+DiagnosisSagittal.RNA_days_to_Harvest)/4') %>%
+contrast = c("(Coronal.F.RDH+Coronal.M.RDH-Control.F.RDH-Control.M.RDH)/2",
+             "(Lambdoid.F.RDH+Lambdoid.M.RDH-Control.F.RDH-Control.M.RDH)/2",
+             "(Metopic.F.RDH+Metopic.M.RDH-Control.F.RDH-Control.M.RDH)/2",
+             "(Sagittal.F.RDH+Sagittal.M.RDH-Control.F.RDH-Control.M.RDH)/2",
+             "(Coronal.F.RDH+Coronal.M.RDH+Lambdoid.F.RDH+Lambdoid.M.RDH+Metopic.F.RDH+Metopic.M.RDH+Sagittal.F.RDH+Sagittal.M.RDH)/8 - (Control.F.RDH+Control.M.RDH)/2",
+             "(Coronal.F.RDH+Lambdoid.F.RDH+Metopic.F.RDH+Sagittal.F.RDH)/4 - Control.F.RDH",
+             "(Coronal.M.RDH+Lambdoid.M.RDH+Metopic.M.RDH+Sagittal.M.RDH)/4 - Control.M.RDH",
+             "(Coronal.F.RDH+Lambdoid.F.RDH+Metopic.F.RDH+Sagittal.F.RDH)/4-(Coronal.M.RDH+Lambdoid.M.RDH+Metopic.M.RDH+Sagittal.M.RDH)/4",
+             "Control.F.RDH-Control.M.RDH",
+             "Coronal.F.RDH-Control.F.RDH",
+             "Coronal.M.RDH-Control.M.RDH") %>%
   makeContrasts(contrasts=.,
                 levels = colnames(FIT$coefficients))
 FIT.CONTR = contrasts.fit(FIT, contrasts=contrast)
 FIT.CONTR = eBayes(FIT.CONTR)
 
 # Get differnetial expression
-DE = lapply(1:11, function(i, FIT){
+DE = lapply(1:dim(contrast)[2], function(i, FIT){
   topTable(FIT, coef=i, number = 50000, confint = T) %>%
     rownameToFirstColumn('ensembl_gene_id')
 }, FIT.CONTR)
-names(DE) = colnames(contrast)[1:11]
+names(DE) = c("Coronal-Control", "Lambdoid-Control", "Metopic-Control", "Sagittal-Control",
+              "Cranio-Control", "Cranio.F-Control.F", "Cranio.M-Control.M", "Cranio.F-Cranio.M",
+              "Control.F-Control.M", "Coronal.F-Control.F", "Coronal.M-Control.M")
 
 DE3 = DE %>% 
   rbindlist(idcol = 'Comparison') %>%
-  dplyr::mutate(Comparison = gsub('Diagnosis','',Comparison),
-                Comparison = gsub('.RNA_days_to_Harvest','',Comparison),
-                Comparison = gsub('[^[:alnum:]]','_', Comparison),
-                Comparison = gsub('_Coronal_Lambdoid_Metopic_Sagittal__4', 'Cranio', Comparison),
-                Model = 'DxxRNADaysToHarvest') %>%
-  tidyr::separate(Comparison, c('reference','against'), sep = '_') %>%
+  dplyr::mutate(Model = 'DxxRNADaysToharvest') %>%
+  tidyr::separate(Comparison, c('reference','against'), sep = '-') %>%
   left_join(GENE.PARAM %>%
               dplyr::select(ensembl_gene_id, hgnc_symbol, percentage_gc_content, gene.length) %>%
               unique()) %>%
@@ -797,3 +806,5 @@ ENRICH_OBJ = synStore(ENRICH_OBJ, activity = synGetActivity(COV_OBJ$properties$i
 |  Residual Expression (for network analysis) |  `r nEXP_OBJ$properties$id`      |
 |  Differential Expression                    |  `r DEXP_OBJ$properties$id`      |
 |  Enrichment Analysis                        |  `r ENRICH_OBJ$properties$id`    |
+
+### [Source R Code](`r thisFile`)
