@@ -12,7 +12,7 @@ synapseLogin()
 
 knit2synapse::knitToFolderEntity(file = "./covariatesAnalysis_Cohort1.Rmd",
                                  parentId = "syn2820780",
-                                 entityName = "Case control and subtype differential expression (original cohort)")
+                                 folderName = "Case control and subtype differential expression (original cohort)")
 ```
 
 ```{r libs, echo=FALSE, warning=FALSE, message=FALSE, include=FALSE}
@@ -579,7 +579,9 @@ contrast = c("(Coronal.F.RDH+Coronal.M.RDH-Control.F.RDH-Control.M.RDH)/2",
              "(Coronal.F.RDH+Coronal.M.RDH-Lambdoid.F.RDH-Lambdoid.M.RDH)/2",
              "(Sagittal.F.RDH+Sagittal.M.RDH-Metopic.F.RDH-Metopic.M.RDH)/2",
              "(Sagittal.F.RDH+Sagittal.M.RDH-Lambdoid.F.RDH-Lambdoid.M.RDH)/2",
-             "(Lambdoid.F.RDH+Lambdoid.M.RDH-Metopic.F.RDH-Metopic.M.RDH)/2") %>%
+             "(Lambdoid.F.RDH+Lambdoid.M.RDH-Metopic.F.RDH-Metopic.M.RDH)/2",
+             "Coronal.M.RDH-Sagittal.M.RDH",
+             "Coronal.F.RDH-Sagittal.F.RDH") %>%
   makeContrasts(contrasts=.,
                 levels = colnames(FIT$coefficients))
 FIT.CONTR = contrasts.fit(FIT, contrasts=contrast)
@@ -594,7 +596,8 @@ names(DE) = c("Coronal-Control", "Lambdoid-Control", "Metopic-Control", "Sagitta
               "Cranio-Control", "Cranio.F-Control.F", "Cranio.M-Control.M", "Cranio.F-Cranio.M",
               "Control.F-Control.M", "Coronal.F-Control.F", "Coronal.M-Control.M",
               "Coronal-Sagittal", "Coronal-Metopic", "Coronal-Lambdoid",
-              "Sagittal-Metopic", "Sagittal-Lambdoid", "Lambdoid-Metopic")
+              "Sagittal-Metopic", "Sagittal-Lambdoid", "Lambdoid-Metopic",
+              "Coronal.M-Sagittal.M", "Coronal.F-Sagittal.F")
 
 DE3 = DE %>% 
   rbindlist(idcol = 'Comparison') %>%
