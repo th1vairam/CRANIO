@@ -573,7 +573,13 @@ contrast = c("(Coronal.F.RDH+Coronal.M.RDH-Control.F.RDH-Control.M.RDH)/2",
              "(Coronal.F.RDH+Lambdoid.F.RDH+Metopic.F.RDH+Sagittal.F.RDH)/4-(Coronal.M.RDH+Lambdoid.M.RDH+Metopic.M.RDH+Sagittal.M.RDH)/4",
              "Control.F.RDH-Control.M.RDH",
              "Coronal.F.RDH-Control.F.RDH",
-             "Coronal.M.RDH-Control.M.RDH") %>%
+             "Coronal.M.RDH-Control.M.RDH",
+             "(Coronal.F.RDH+Coronal.M.RDH-Sagittal.F.RDH-Sagittal.M.RDH)/2",
+             "(Coronal.F.RDH+Coronal.M.RDH-Metopic.F.RDH-Metopic.M.RDH)/2",
+             "(Coronal.F.RDH+Coronal.M.RDH-Lambdoid.F.RDH-Lambdoid.M.RDH)/2",
+             "(Sagittal.F.RDH+Sagittal.M.RDH-Metopic.F.RDH-Metopic.M.RDH)/2",
+             "(Sagittal.F.RDH+Sagittal.M.RDH-Lambdoid.F.RDH-Lambdoid.M.RDH)/2",
+             "(Lambdoid.F.RDH+Lambdoid.M.RDH-Metopic.F.RDH-Metopic.M.RDH)/2") %>%
   makeContrasts(contrasts=.,
                 levels = colnames(FIT$coefficients))
 FIT.CONTR = contrasts.fit(FIT, contrasts=contrast)
@@ -586,7 +592,9 @@ DE = lapply(1:dim(contrast)[2], function(i, FIT){
 }, FIT.CONTR)
 names(DE) = c("Coronal-Control", "Lambdoid-Control", "Metopic-Control", "Sagittal-Control",
               "Cranio-Control", "Cranio.F-Control.F", "Cranio.M-Control.M", "Cranio.F-Cranio.M",
-              "Control.F-Control.M", "Coronal.F-Control.F", "Coronal.M-Control.M")
+              "Control.F-Control.M", "Coronal.F-Control.F", "Coronal.M-Control.M",
+              "Coronal-Sagittal", "Coronal-Metopic", "Coronal-Lambdoid",
+              "Sagittal-Metopic", "Sagittal-Lambdoid", "Lambdoid-Metopic")
 
 DE3 = DE %>% 
   rbindlist(idcol = 'Comparison') %>%
