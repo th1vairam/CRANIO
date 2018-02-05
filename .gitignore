@@ -1,4 +1,7 @@
 .Rproj.user
 .Rhistory
 .RData
-cranioRNAseq.csv
+*.csv
+*.tsv
+*.html
+*.xlsx
