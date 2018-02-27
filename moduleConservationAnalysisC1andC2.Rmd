@@ -1,0 +1,201 @@
+---
+title: "MEGENA module conservation analysis between cohort 1 and 2"
+author: "Thanneer Perumal"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+### Load libraries
+```{r libs, echo=FALSE, warning=FALSE, include=FALSE, cache=FALSE}
+## It is assumed your working directory is where this file
+
+## Load required libraries
+library(CovariateAnalysis) # get it from devtools::install_github('th1vairam/CovariateAnalysis@dev')
+library(data.table)
+library(plyr)
+library(tidyverse)
+
+library(synapser)
+library(knitr)
+library(githubr)
+
+synLogin()
+
+library(foreach)
+library(doParallel)
+
+cl = makeCluster(detectCores()-2)
+registerDoParallel(cl)
+
+options(xtable.type="html")
+
+knitr::opts_chunk$set(
+  echo=FALSE,
+  warning=FALSE,
+  message=FALSE,
+  error = FALSE,
+  tidy = FALSE,
+  cache = TRUE)
+```
+### Get synapse and github specific parameters
+```{r synapse.parameters, include=FALSE}
+# Synapse parameters
+PARENT_ID = 'syn11638075'
+
+# Github commit for the source code
+thisFileName <- 'moduleConservationAnalysisC1andC2.Rmd'
+thisRepo <- getRepo(repository = "th1vairam/CRANIO", ref="branch", refName='moduleAnalysis')
+thisFile <- getPermlink(repository = thisRepo, repositoryPath=thisFileName)
+```
+
+### Get overlap between MEGENA modules
+### Get module overlap statisitcs from synapse
+```{r utility.functions}
+query2df <- function(queryObj){
+  queryObj$asList() %>%
+    ldply(.fun = function(x){do.call(cbind, x)})
+}
+
+modPreservStats <- function(refCoexpMat, testCoexpMat, refModule){
+  refModule = intersect(colnames(refCoexpMat), colnames(testCoexpMat)) %>%
+    intersect(refModule)
+  modLen = length(refModule)
+  
+  # Extract sub networks from reference and test
+  refSubnet = refCoexpMat[unique(refModule), unique(refModule)]
+  testSubnet = testCoexpMat[unique(refModule), unique(refModule)]
+  
+  # Calculate node degree in ref and test networks
+  testAllNodeDegree = rowSums(testCoexpMat, na.rm = T)
+  testNodeDegree = rowSums(testSubnet, na.rm = T)
+  refNodeDegree = rowSums(refSubnet, na.rm = T)
+  
+  ### Connectivity preservation stats
+  # Correlation between adjacency matrices
+  cor.adj = cor(as.vector(refSubnet), as.vector(testSubnet)) %>% as.numeric()
+  
+  # Correlation between node degree
+  cor.kIM = cor(refNodeDegree, testNodeDegree[names(refNodeDegree)])
+
+  ### Density preservation stats
+  # Mean correlation
+  mean.Cor = rowMeans(testSubnet) %>% mean()
+  
+  # Mean connectivity
+  mean.kIM = mean(testNodeDegree)
+  
+  # Mean connectivity ratio 
+  mean.kIM2kALL = mean(testNodeDegree/testAllNodeDegree[names(testNodeDegree)], na.rm = T)
+  
+  return(data.frame(cor.adj = cor.adj,
+                    cor.kIM = cor.kIM,
+                    mean.Cor = mean.Cor,
+                    mean.kIM = mean.kIM,
+                    mean.kIM2kALL = mean.kIM2kALL))
+}
+
+computeModulePreservation <- function(refCoexpMat, testCoexpMat, refModList){
+  plyr::llply(refModList, .fun = function(refModule, refCoexpMat, testCoexpMat){
+    tmp = modPreservStats(refCoexpMat, testCoexpMat, refModule) %>%
+      tidyr::gather(Feature, Value)
+    tmp.rnd = purrr::map_df(1:100, .f = function(nperm, refModule, refCoexpMat, testCoexpMat){
+      rndModule = sample(rownames(refCoexpMat), length(refModule))
+      modPreservStats(refCoexpMat, testCoexpMat, rndModule) 
+    }, 
+    refModule, refCoexpMat, testCoexpMat, .id = 'nperm') %>% 
+      tidyr::gather(Feature, Value, -nperm) %>% 
+      dplyr::group_by(Feature) %>% 
+      dplyr::summarise(mn = mean(Value, na.rm = T), 
+                       sd = sd(Value, na.rm = T)) %>% 
+      dplyr::left_join(tmp) %>% 
+      dplyr::mutate(Z = (Value-mn)/sd)
+    cbind(tmp.rnd %>%
+            dplyr::select(Feature, Value) %>%
+            tidyr::spread(Feature, Value),
+          tmp.rnd %>% 
+            dplyr::mutate(Feature = paste('Z', Feature, sep = '.')) %>%
+            dplyr::select(Feature, Z) %>%
+            tidyr::spread(Feature, Z))
+  }, 
+  refCoexpMat, testCoexpMat,
+  .parallel = F,
+  .paropts = list(.packages = c('dplyr'), .export = c('modPreservStats'))) %>%
+    data.table::rbindlist(idcol = 'ModuleName', fill = TRUE)
+}
+```
+
+```{r get.mdls}
+mod = c(cohort1 = 'syn11635629', cohort2 = 'syn11635905') %>%
+  plyr::llply(.fun =function(foldId){
+   synChunkedQuery(paste0('select * from folder where parentId =="', foldId, '"')) %>%
+      query2df() %>%
+      plyr::dlply(.(folder.name), .fun = function(x){
+        tmp1 = synChunkedQuery(paste0('select * from file where parentId =="', x$folder.id, '"')) %>% 
+          query2df() %>%
+          dplyr::filter(file.name == 'output.RData')
+        load(synGet(as.character(tmp1$file.id))$path)
+        
+        # Remove small or big modules
+        mod = output$modules
+        sz = sapply(mod, length)
+        mod = mod[sz >= 30 & sz <= 2000]
+        return(mod)
+      })
+  })
+
+cor.mat.ids = c(cohort1 = 'syn11635629', cohort2 = 'syn11635905') %>%
+  plyr::llply(.fun =function(foldId){
+   synChunkedQuery(paste0('select * from folder where parentId =="', foldId, '"')) %>%
+      query2df() %>%
+      plyr::dlply(.(folder.name), .fun = function(x){
+        tmp1 = synChunkedQuery(paste0('select * from file where parentId =="', x$folder.id, '"')) %>% 
+          query2df() %>%
+          dplyr::filter(file.name == 'Data_Correlation.txt') %>%
+          dplyr::select(file.id)%>%
+          unlist() %>%
+          as.character()
+       
+      })
+  })
+```
+### Get module overlap/enrichment stats
+```{r ovlp.megena}
+bck.genes = unique(c(do.call(c, mod$cohort1$control), 
+                     do.call(c, mod$cohort2$control)))
+ovlp.stats = purrr::map2(mod$cohort1, mod$cohort2, function(c1, c2, bckGenes){
+  plyr::ldply(c1, .fun = function(x, c2, bckGenes){
+    plyr::ldply(c2, .fun = function(y, x, bckGenes){
+      CovariateAnalysis::fisherEnrichment(x,y,bckGenes)
+    }, x, bckGenes, .parallel = T, .id = 'ModuleName_c2')
+  }, c2, bckGenes, .id = 'ModuleName_c1') %>%
+    dplyr::mutate(FDR = p.adjust(pval, method = 'fdr')) %>%
+    dplyr::filter(FDR <= 0.05, Odds.Ratio >= 1)
+}, bck.genes)
+```
+### Get module conservation stats
+```{r mdl.cnsrv}
+conservation.stats = purrr::imap(ovlp.stats, .f = function(ovlpStat, subType, mod){
+  coexpMat = c(cohort1 = cor.mat.ids$cohort1[[subType]], cohort2 = cor.mat.ids$cohort2[[subType]]) %>%
+    plyr::llply(.fun = function(id){
+      synGet(as.character(id))$path %>%
+        fread(data.table = FALSE, header = T) %>%
+        igraph::graph_from_data_frame(directed = FALSE) %>%
+        igraph::as_adjacency_matrix(attr = 'rho', type = 'both') %>%
+        as.matrix() %>%
+        return()
+    })
+  
+  modToTest = ovlpStat %>%
+    dplyr::arrange(desc(Odds.Ratio)) %>%
+    dplyr::top_n(100, Odds.Ratio)
+  
+  refModuleList = mod$cohort1[[subType]][unique(modToTest$ModuleName_c1)]
+  c1ConsvStat = computeModulePreservation(coexpMat[[1]], coexpMat[[2]], refModuleList)
+  
+  refModuleList = mod$cohort2[[subType]][unique(modToTest$ModuleName_c2)]
+  c2ConsvStat = computeModulePreservation(coexpMat[[2]], coexpMat[[1]], refModuleList)
+  
+  return(list(cohort1 = c1ConsvStat, cohort2 = c2ConsvStat) %>%
+           rbindlist(use.names = T, fill = T, idcol = 'cohort'))
+}, mod)
+```

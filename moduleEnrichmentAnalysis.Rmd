@@ -152,6 +152,7 @@ enrich.results = mod %>%
 
 fwrite(enrich.results, file = 'enrichmentResults.tsv', sep = '\t')
 obj = File('enrichmentResults.tsv', name = 'Enrichment Results (for all modules)', parentId = parentId)
-obj = synapseClient::synStore(obj, executed = thisFile, used = all.used.ids, 
-                              activityName = activityName, activityDescription = activityDescription)
+obj = synapseClient::synStore(obj, executed = thisFile, used = as.character(all.used.ids), 
+                              activityName = 'Pathway enrichment analysis', 
+                              activityDescription = 'Pathway enrichment analysis for each modules')
 ```
