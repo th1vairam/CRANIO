@@ -14,12 +14,13 @@ library(CovariateAnalysis) # get it from devtools::install_github('th1vairam/Cov
 library(data.table)
 library(plyr)
 library(tidyverse)
+library(stringr)
 
-library(synapser)
+library(synapseClient)
 library(knitr)
 library(githubr)
 
-synLogin()
+synapseLogin()
 
 library(foreach)
 library(doParallel)
@@ -47,15 +48,7 @@ thisFileName <- 'moduleConservationAnalysisC1andC2.Rmd'
 thisRepo <- getRepo(repository = "th1vairam/CRANIO", ref="branch", refName='moduleAnalysis')
 thisFile <- getPermlink(repository = thisRepo, repositoryPath=thisFileName)
 ```
-
-### Get overlap between MEGENA modules
-### Get module overlap statisitcs from synapse
 ```{r utility.functions}
-query2df <- function(queryObj){
-  queryObj$asList() %>%
-    ldply(.fun = function(x){do.call(cbind, x)})
-}
-
 modPreservStats <- function(refCoexpMat, testCoexpMat, refModule){
   refModule = intersect(colnames(refCoexpMat), colnames(testCoexpMat)) %>%
     intersect(refModule)
@@ -93,47 +86,16 @@ modPreservStats <- function(refCoexpMat, testCoexpMat, refModule){
                     mean.kIM = mean.kIM,
                     mean.kIM2kALL = mean.kIM2kALL))
 }
-
-computeModulePreservation <- function(refCoexpMat, testCoexpMat, refModList){
-  plyr::llply(refModList, .fun = function(refModule, refCoexpMat, testCoexpMat){
-    tmp = modPreservStats(refCoexpMat, testCoexpMat, refModule) %>%
-      tidyr::gather(Feature, Value)
-    tmp.rnd = purrr::map_df(1:100, .f = function(nperm, refModule, refCoexpMat, testCoexpMat){
-      rndModule = sample(rownames(refCoexpMat), length(refModule))
-      modPreservStats(refCoexpMat, testCoexpMat, rndModule) 
-    }, 
-    refModule, refCoexpMat, testCoexpMat, .id = 'nperm') %>% 
-      tidyr::gather(Feature, Value, -nperm) %>% 
-      dplyr::group_by(Feature) %>% 
-      dplyr::summarise(mn = mean(Value, na.rm = T), 
-                       sd = sd(Value, na.rm = T)) %>% 
-      dplyr::left_join(tmp) %>% 
-      dplyr::mutate(Z = (Value-mn)/sd)
-    cbind(tmp.rnd %>%
-            dplyr::select(Feature, Value) %>%
-            tidyr::spread(Feature, Value),
-          tmp.rnd %>% 
-            dplyr::mutate(Feature = paste('Z', Feature, sep = '.')) %>%
-            dplyr::select(Feature, Z) %>%
-            tidyr::spread(Feature, Z))
-  }, 
-  refCoexpMat, testCoexpMat,
-  .parallel = F,
-  .paropts = list(.packages = c('dplyr'), .export = c('modPreservStats'))) %>%
-    data.table::rbindlist(idcol = 'ModuleName', fill = TRUE)
-}
 ```
-
+### Get modules and coexpression matrix from synapse
 ```{r get.mdls}
 mod = c(cohort1 = 'syn11635629', cohort2 = 'syn11635905') %>%
   plyr::llply(.fun =function(foldId){
-   synChunkedQuery(paste0('select * from folder where parentId =="', foldId, '"')) %>%
-      query2df() %>%
+   synQuery(paste0('select * from folder where parentId =="', foldId, '"')) %>%
       plyr::dlply(.(folder.name), .fun = function(x){
-        tmp1 = synChunkedQuery(paste0('select * from file where parentId =="', x$folder.id, '"')) %>% 
-          query2df() %>%
+        tmp1 = synQuery(paste0('select * from file where parentId =="', x$folder.id, '"')) %>% 
           dplyr::filter(file.name == 'output.RData')
-        load(synGet(as.character(tmp1$file.id))$path)
+        load(synGet(as.character(tmp1$file.id))@filePath)
         
         # Remove small or big modules
         mod = output$modules
@@ -143,13 +105,23 @@ mod = c(cohort1 = 'syn11635629', cohort2 = 'syn11635905') %>%
       })
   })
 
+total.mod = plyr::ldply(mod, function(x){
+  plyr::ldply(x, function(y){
+    data.frame(nmod = length(y),
+               median.sz = median(sapply(y, length)))
+  })
+}) %>%
+  dplyr::rename(cohort = .id, subtype = folder.name) %>%
+  tidyr::gather(feature, value, -cohort, -subtype) %>%
+  tidyr::unite(cohort.feature, cohort, feature, sep = '.') %>%
+  tidyr::spread(cohort.feature, value)
+kable(total.mod)
+  
 cor.mat.ids = c(cohort1 = 'syn11635629', cohort2 = 'syn11635905') %>%
   plyr::llply(.fun =function(foldId){
-   synChunkedQuery(paste0('select * from folder where parentId =="', foldId, '"')) %>%
-      query2df() %>%
+   synQuery(paste0('select * from folder where parentId =="', foldId, '"')) %>%
       plyr::dlply(.(folder.name), .fun = function(x){
-        tmp1 = synChunkedQuery(paste0('select * from file where parentId =="', x$folder.id, '"')) %>% 
-          query2df() %>%
+        tmp1 = synQuery(paste0('select * from file where parentId =="', x$folder.id, '"')) %>% 
           dplyr::filter(file.name == 'Data_Correlation.txt') %>%
           dplyr::select(file.id)%>%
           unlist() %>%
@@ -158,7 +130,7 @@ cor.mat.ids = c(cohort1 = 'syn11635629', cohort2 = 'syn11635905') %>%
       })
   })
 ```
-### Get module overlap/enrichment stats
+### Get module overlap/enrichment statistics
 ```{r ovlp.megena}
 bck.genes = unique(c(do.call(c, mod$cohort1$control), 
                      do.call(c, mod$cohort2$control)))
@@ -171,31 +143,300 @@ ovlp.stats = purrr::map2(mod$cohort1, mod$cohort2, function(c1, c2, bckGenes){
     dplyr::mutate(FDR = p.adjust(pval, method = 'fdr')) %>%
     dplyr::filter(FDR <= 0.05, Odds.Ratio >= 1)
 }, bck.genes)
+
+ovlp.mod = ovlp.stats %>%
+  purrr::map(.f = function(x){
+    x = x %>% 
+      dplyr::filter(FDR <= 0.05, noverlap >= 15) %>%
+      dplyr::select(ModuleName_c1, ModuleName_c2, Odds.Ratio) %>%
+      dplyr::mutate(ModuleName_c1 = paste0('cohort1.', ModuleName_c1),
+                    ModuleName_c2 = paste0('cohort2.', ModuleName_c2)) %>%
+      igraph::graph_from_data_frame(directed = F) %>%
+      igraph::as_adjacency_matrix(attr = 'Odds.Ratio') %>%
+      as.matrix()
+    return(list(cohort1 = grep('cohort1', rownames(x), value = T) %>% gsub('cohort1.','',.),
+                cohort2 = grep('cohort2', rownames(x), value = T) %>% gsub('cohort2.','',.)))
+  })
 ```
-### Get module conservation stats
+### Get module conservation statistics across cohort 1 and 2 in each sub-type
 ```{r mdl.cnsrv}
-conservation.stats = purrr::imap(ovlp.stats, .f = function(ovlpStat, subType, mod){
-  coexpMat = c(cohort1 = cor.mat.ids$cohort1[[subType]], cohort2 = cor.mat.ids$cohort2[[subType]]) %>%
+conservation.stats.cohort = purrr::transpose(mod) %>%
+  purrr::imap_dfr(.f = function(innerMod, subType, corMatIds){
+  coexpMat = c(cohort1 = corMatIds$cohort1[[subType]], cohort2 = corMatIds$cohort2[[subType]]) %>%
     plyr::llply(.fun = function(id){
-      synGet(as.character(id))$path %>%
-        fread(data.table = FALSE, header = T) %>%
-        igraph::graph_from_data_frame(directed = FALSE) %>%
-        igraph::as_adjacency_matrix(attr = 'rho', type = 'both') %>%
-        as.matrix() %>%
-        return()
-    })
+        synGet(as.character(id))@filePath %>%
+          fread(data.table = FALSE, header = T) %>%
+          igraph::graph_from_data_frame(directed = FALSE) %>%
+          igraph::as_adjacency_matrix(attr = 'rho', type = 'both') %>%
+          as.matrix() %>%
+          return()
+      })
   
-  modToTest = ovlpStat %>%
-    dplyr::arrange(desc(Odds.Ratio)) %>%
-    dplyr::top_n(100, Odds.Ratio)
+  consvStat = purrr::imap_dfr(innerMod, .f = function(modList, cohortName, coexpMat){
+    
+    refCoexpMat = purrr::keep(coexpMat, names(coexpMat) == cohortName)[[1]]
+    testCoexpMat = purrr::keep(coexpMat, names(coexpMat) != cohortName)[[1]]
+    refModuleList = modList
+    
+    innerConsvStat = plyr::ldply(refModuleList,
+                                 .fun = function(x, refCoexpMat, testCoexpMat, modPreservStats){
+                                   tmp = modPreservStats(refCoexpMat, testCoexpMat, x) %>%
+                                     tidyr::gather(Feature, Value)
+                                   
+                                   tmp.rnd = purrr::map_df(1:100, .f = function(nperm, refModule, refCoexpMat, testCoexpMat){
+                                     rndModule = sample(rownames(refCoexpMat), length(refModule))
+                                     modPreservStats(refCoexpMat, testCoexpMat, rndModule) 
+                                   },
+                                   x, refCoexpMat, testCoexpMat, .id = 'nperm') %>% 
+                                     tidyr::gather(Feature, Value, -nperm) %>% 
+                                     dplyr::group_by(Feature) %>% 
+                                     dplyr::summarise(mn = mean(Value, na.rm = T), 
+                                                      sd = sd(Value, na.rm = T)) %>% 
+                                     dplyr::left_join(tmp) %>% 
+                                     dplyr::mutate(Z = (Value-mn)/sd)
+                                   
+                                   return(cbind(tmp.rnd %>%
+                                                  dplyr::select(Feature, Value) %>%
+                                                  tidyr::spread(Feature, Value),
+                                                tmp.rnd %>% 
+                                                  dplyr::mutate(Feature = paste('Z', Feature, sep = '.')) %>%
+                                                  dplyr::select(Feature, Z) %>%
+                                                  tidyr::spread(Feature, Z)))
+                                  },
+                                 refCoexpMat, testCoexpMat, modPreservStats,
+                                 .id = 'ModuleName') %>%
+      dplyr::mutate(reference = cohortName)
+    
+    return(innerConsvStat)
+  }, 
+  coexpMat) %>%
+      dplyr::mutate(subType = subType)
   
-  refModuleList = mod$cohort1[[subType]][unique(modToTest$ModuleName_c1)]
-  c1ConsvStat = computeModulePreservation(coexpMat[[1]], coexpMat[[2]], refModuleList)
-  
-  refModuleList = mod$cohort2[[subType]][unique(modToTest$ModuleName_c2)]
-  c2ConsvStat = computeModulePreservation(coexpMat[[2]], coexpMat[[1]], refModuleList)
-  
-  return(list(cohort1 = c1ConsvStat, cohort2 = c2ConsvStat) %>%
-           rbindlist(use.names = T, fill = T, idcol = 'cohort'))
-}, mod)
+  fwrite(consvStat, file = paste0(subType,'.tsv'), sep = '\t')
+  return(consvStat)
+}, cor.mat.ids)
 ```
+### Rank conserved modules (per subtype across cohort)
+```{r rnk.mdl}
+conserved.mod.cohort = plyr::dlply(conservation.stats.cohort, .(subType), .fun = function(cnsvStat){
+  cnsvStat = cnsvStat %>%
+    dplyr::group_by(subType, reference, ModuleName) %>%
+    dplyr::mutate(Z.dens = median(Z.mean.Cor, Z.mean.kIM, na.rm = T),
+                  Z.con = median(Z.cor.adj, Z.cor.kIM, na.rm = T),
+                  Z.summary = (Z.dens + Z.con)/2) %>%
+    dplyr::arrange(desc(abs(Z.summary))) %>%
+    dplyr::mutate(Cohort.ModuleName = paste(reference, ModuleName, sep = '.'))
+  
+  p = ggplot(cnsvStat, aes(x = Cohort.ModuleName, y = Z.summary, color = reference)) 
+  p = p + geom_point() + theme(axis.text.x = element_blank(), legend.position = 'top')  
+  p = p + geom_hline(yintercept = 2, color = 'blue',linetype="dashed")
+  p = p + geom_hline(yintercept = 10, color = 'purple',linetype="dashed")
+  p = p + ggtitle(unique(cnsvStat$subType)) + xlab('Module Name') + ylab('Z summary')
+  
+  cnsvStat = cnsvStat %>%
+    dplyr::filter(Z.summary >= 10) %>%
+    plyr::dlply(.(reference), .fun = function(x){unique(x$ModuleName)})
+  
+  return(c(list(p = p), cnsvStat))
+})
+
+ggpubr::ggarrange(plotlist = lapply(conserved.mod.cohort, function(x){x$p}), nrow = 2, ncol = 2)
+```
+### Get preserved/unpreserved modules between sub-types in each cohort
+```{r presv.sub.type}
+conservation.stats.subtypes = mod %>%
+  purrr::imap_dfr(.f = function(innerMod, cohortName, corMatIds){
+    subTypes = combn(names(innerMod), 2) %>% t 
+    subTypes1 = subTypes[,c(2,1)]
+    subTypes = rbind(subTypes,subTypes1) %>% unique() %>% as.data.frame()
+    colnames(subTypes) = c('reference', 'against')
+    subTypes = subTypes %>% dplyr::filter(reference == 'control' || against == 'control')
+    
+    coexpMat = corMatIds[[cohortName]] %>%
+      plyr::llply(.fun = function(id){
+        synGet(as.character(id))@filePath %>%
+          fread(data.table = FALSE, header = T) %>%
+          igraph::graph_from_data_frame(directed = FALSE) %>%
+          igraph::as_adjacency_matrix(attr = 'rho', type = 'both') %>%
+          as.matrix() %>%
+          return()
+      })
+    
+    cnsvStats = plyr::ddply(subTypes, .(reference, against), .fun = function(x, coexpMat, innerMod){
+      refCoexpMat = coexpMat[[x$reference]]
+      testCoexpMat = coexpMat[[x$against]]
+      refModuleList = innerMod[[x$reference]]
+      
+      innerConsvStat = plyr::ldply(refModuleList,
+                                   .fun = function(x, refCoexpMat, testCoexpMat, modPreservStats){
+                                     tmp = modPreservStats(refCoexpMat, testCoexpMat, x) %>%
+                                       tidyr::gather(Feature, Value)
+                                     
+                                     tmp.rnd = purrr::map_df(1:100, .f = function(nperm, refModule,
+                                                                                  refCoexpMat, testCoexpMat){
+                                       rndModule = sample(rownames(refCoexpMat), length(refModule))
+                                       modPreservStats(refCoexpMat, testCoexpMat, rndModule) 
+                                      },
+                                      x, refCoexpMat, testCoexpMat, .id = 'nperm') %>% 
+                                       tidyr::gather(Feature, Value, -nperm) %>% 
+                                       dplyr::group_by(Feature) %>% 
+                                       dplyr::summarise(mn = mean(Value, na.rm = T), 
+                                                        sd = sd(Value, na.rm = T)) %>% 
+                                       dplyr::left_join(tmp) %>% 
+                                       dplyr::mutate(Z = (Value-mn)/sd)
+                                     
+                                     return(cbind(tmp.rnd %>%
+                                                    dplyr::select(Feature, Value) %>%
+                                                    tidyr::spread(Feature, Value),
+                                                  tmp.rnd %>% 
+                                                    dplyr::mutate(Feature = paste('Z', Feature, sep = '.'))
+                                                  %>%
+                                                    dplyr::select(Feature, Z) %>%
+                                                    tidyr::spread(Feature, Z)))
+                                     },
+                                   refCoexpMat, testCoexpMat, modPreservStats,
+                                   .id = 'ModuleName') %>%
+        dplyr::mutate(reference = x$reference, against = x$against)
+      
+      return(innerConsvStat)
+    }, coexpMat, innerMod) %>%
+      dplyr::mutate(cohort = cohortName)
+    
+  fwrite(cnsvStats, file = paste0(cohortName, '.tsv'), sep = '\t')
+  return(cnsvStats)
+}, cor.mat.ids)
+```
+### Rank conserved modules (per cohort against subtypes)
+```{r rnk.mdl1}
+conserved.mod.subtypes = plyr::dlply(conservation.stats.subtypes, .(subType), .fun = function(cnsvStat){
+  cnsvStat = cnsvStat %>%
+    dplyr::group_by(subType, reference, ModuleName) %>%
+    dplyr::mutate(Z.dens = median(Z.mean.Cor, Z.mean.kIM, na.rm = T),
+                  Z.con = median(Z.cor.adj, Z.cor.kIM, na.rm = T),
+                  Z.summary = (Z.dens + Z.con)/2) %>%
+    dplyr::arrange(desc(abs(Z.summary))) %>%
+    dplyr::mutate(Cohort.ModuleName = paste(reference, ModuleName, sep = '.'))
+  
+  p = ggplot(cnsvStat, aes(x = Cohort.ModuleName, y = Z.summary, color = reference)) 
+  p = p + geom_point() + theme(axis.text.x = element_blank(), legend.position = 'top')  
+  p = p + geom_hline(yintercept = 2, color = 'blue',linetype="dashed")
+  p = p + geom_hline(yintercept = 10, color = 'purple',linetype="dashed")
+  p = p + ggtitle(unique(cnsvStat$subType)) + xlab('Module Name') + ylab('Z summary')
+  
+  cnsvStat = cnsvStat %>%
+    dplyr::filter(Z.summary >= 10) %>%
+    plyr::dlply(.(reference), .fun = function(x){unique(x$ModuleName)})
+  
+  return(c(list(p = p), cnsvStat))
+})
+
+ggpubr::ggarrange(plotlist = lapply(conserved.mod.cohort, function(x){x$p}), nrow = 2, ncol = 2)
+```
+Relationship between cohorts 1 and 2 (enrichment analysis signifying the overlap between the modules)
+```{r cons.mod.ovlp, fig.height=10, fig.width=20}
+conserved.mod.clust = purrr::imap(conserved.mod.cohort, .f = function(x, nx, ovlpStats){
+  tmp = dplyr::filter(ovlpStats[[nx]], 
+                      ModuleName_c1 %in% x$cohort1,
+                      ModuleName_c2 %in% x$cohort2) %>%
+    dplyr::select(ModuleName_c1, ModuleName_c2, Odds.Ratio, FDR) %>%
+    dplyr::mutate(ModuleName_c1 = paste('cohort1', ModuleName_c1, sep = '.'),
+                  ModuleName_c2 = paste('cohort2', ModuleName_c2, sep = '.')) %>%
+    unique()
+  OR = igraph::graph_from_data_frame(tmp, directed = FALSE) %>%
+    igraph::as_adj(type = 'both', attr = 'Odds.Ratio') %>%
+    as.matrix()
+  OR = OR[tmp$ModuleName_c1,tmp$ModuleName_c2]
+  FDR = igraph::graph_from_data_frame(tmp, directed = FALSE) %>%
+    igraph::as_adj(type = 'both', attr = 'FDR') %>%
+    as.matrix()
+  FDR = FDR[tmp$ModuleName_c1,tmp$ModuleName_c2]
+  OR[FDR>=0.05] = 0
+  
+  h = ComplexHeatmap::Heatmap(log10(OR+0.1),
+                              col = circlize::colorRamp2(c(0,log10(max(OR))),c('white','red')),
+                              name = 'log10(Odds Ratio)')
+  # ,
+  #                             cell_fun = function(j, i, x, y, width, height, fill) {
+  #                               grid.text(format(FDR[i, j], digits = 2),x, y, gp = gpar(fontsize = 10))
+  #                             })
+  return(h)
+}, ovlp.stats)
+conserved.mod.clust$control
+conserved.mod.clust$coronal
+conserved.mod.clust$metopic
+conserved.mod.clust$sagittal
+```
+```{r consv.sts.subtypes}
+tmp = conservation.stats.subtypes %>%
+  dplyr::group_by(cohort, reference, against) %>%
+  dplyr::mutate(Z.dens = median(Z.mean.Cor, Z.mean.kIM, na.rm = T),
+                Z.con = median(Z.cor.adj, Z.cor.kIM, na.rm = T),
+                Z.summary = (Z.dens + Z.con)/2) %>%
+  dplyr::arrange(desc(abs(Z.summary)))
+
+p = purrr::map(c('coronal', 'sagittal', 'metopic'), .f = function(x, tmp){
+  p = tmp %>% 
+    dplyr::filter(reference %in% c('control', x),
+                  against %in% c('control', x)) %>%
+    ggplot(aes(x = ModuleName, y = Z.summary, color = reference)) + geom_point() + facet_grid(.~cohort)
+  p = p + theme(axis.text.x = element_blank(), legend.position = 'top') 
+  p = p + geom_hline(yintercept = 2, color = 'blue', linetype = 'dashed')
+  p = p + geom_hline(yintercept = 10, color = 'purple', linetype = 'dashed')
+  return(p)
+}, tmp)
+ggpubr::ggarrange(plotlist = p, ncol = 1, nrow = 3)
+
+p = purrr::map(c('sagittal', 'metopic'), .f = function(x, tmp){
+  p = tmp %>% 
+    dplyr::filter(reference %in% c('coronal', x),
+                  against %in% c('coronal', x)) %>%
+    ggplot(aes(x = ModuleName, y = Z.summary, color = reference)) + geom_point() + facet_grid(.~cohort)
+  p = p + theme(axis.text.x = element_blank(), legend.position = 'top') 
+  p = p + geom_hline(yintercept = 2, color = 'blue', linetype = 'dashed')
+  p = p + geom_hline(yintercept = 10, color = 'purple', linetype = 'dashed')
+  return(p)
+}, tmp)
+ggpubr::ggarrange(plotlist = p, ncol = 1, nrow = 2)
+
+p = purrr::map(c('metopic'), .f = function(x, tmp){
+  p = tmp %>% 
+    dplyr::filter(reference %in% c('sagittal', x),
+                  against %in% c('sagittal', x)) %>%
+    ggplot(aes(x = ModuleName, y = Z.summary, color = reference)) + geom_point() + facet_grid(.~cohort)
+  p = p + theme(axis.text.x = element_blank(), legend.position = 'top') 
+  p = p + geom_hline(yintercept = 2, color = 'blue', linetype = 'dashed')
+  p = p + geom_hline(yintercept = 10, color = 'purple', linetype = 'dashed')
+  return(p)
+}, tmp)
+ggpubr::ggarrange(plotlist = p, ncol = 1, nrow = 1)
+```
+
+### Identify pathways that are conserved in each subtype
+```{r path.cons}
+path.enrich = fread(synGet('syn11924793')@filePath)
+
+cons.path = purrr::imap(conserved.mod, function(x, nx){
+  x$mod.c1 %>% 
+    as.character() %>% 
+    unique() %>% 
+    data.frame(ModuleName = .) %>%
+    dplyr::mutate(cohort = 'cohort1',
+                  subtype = nx) %>%
+    rbind(x$mod.c2 %>% 
+    as.character() %>% 
+    unique() %>% 
+    data.frame(ModuleName = .) %>%
+    dplyr::mutate(cohort = 'cohort2',
+                  subtype = nx))
+}) %>%
+  rbindlist() %>%
+  dplyr::left_join(path.enrich %>%
+                     tidyr::separate(.id, c('cohort', 'subtype', 'ModuleName'), sep = '\\.')) %>%
+  plyr::ddply(.(cohort, subtype, Category), .fun = function(x){
+    x$fdr = p.adjust(x$pval, method = 'fdr')
+    return(x)
+  }) 
+
+
+```
+
