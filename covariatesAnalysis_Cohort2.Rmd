@@ -1,18 +1,20 @@
 ---
-title: "Covariate analysis of CRANIO counts (validation cohort with CQN normalisation and covariates adjusted)"
+title: "Covariate analysis of CRANIO counts (Cohort 2 with CQN normalisation and covariates adjusted)"
 author: "Thanneer Perumal"
 date: "`r date()`"
 output: html_document
+editor_options: 
+  chunk_output_type: console
 ---
 ```{r knit2synapse, eval=FALSE}
-library(synapseClient)
+library(synapser)
 library(knit2synapse) # get the package from devtools::install_github('Sage-Bionetworks/knit2synapse')
 
-synapseLogin()
+synapser::synLogin()
 
-knit2synapse::knitToFolderEntity(file = "./covariatesAnalysis_validCohort.Rmd",
-                                 parentId = "syn2820780",
-                                 folderName = "Case control and subtype differential expression (validation cohort)")
+knit2synapse::createAndKnitToFolderEntity(file = "./covariatesAnalysis_Cohort2.Rmd",
+                                          parentId = "syn2820780",
+                                          folderName = "Case control and subtype differential expression (Cohort 2)")
 ```
 
 ```{r libs, echo=FALSE, warning=FALSE, message=FALSE, include=FALSE}
@@ -37,11 +39,11 @@ library(biomaRt)
 library(RColorBrewer)
 library(cqn)
 
-library(synapseClient)
+library(synapser)
 library(knitr)
 library(githubr) # get the package from devtools::install_github('brian-bot/githubr')
 
-synapseLogin()
+synapser::synLogin()
 
 library(doParallel)
 library(foreach)
@@ -66,7 +68,7 @@ parentId = 'syn2820780';
 activityName = 'Covariate analysis of validation cohort';
 activityDescription = 'Covariate analysis of RNAseq data from craniosynostosis validation cohort';
 
-thisFileName <- 'covariatesAnalysis_validCohort.Rmd'
+thisFileName <- 'covariatesAnalysis_Cohort2.Rmd'
 
 # Github link
 thisRepo <- getRepo(repository = "th1vairam/CRANIO", ref="branch", refName='diffexp')
@@ -78,32 +80,33 @@ Obtain count matrix and metadata from synapse.
 # Download expression data
 COUNT_ID <- 'syn7477102';
 ALL_USED_IDs <- COUNT_ID
-COUNT_OBJ <- synGet(COUNT_ID)
-COUNT <- read.table(COUNT_OBJ@filePath,header=T,sep='\t',check.names = F)
+COUNT_OBJ <- synapser::synGet(COUNT_ID)
+COUNT <- read.table(COUNT_OBJ$path,header=T,sep='\t',check.names = F)
 
 # Get sample ids mapping for metadata
 METADATA.MATCH_ID <- 'syn7477113'
 ALL_USED_IDs[length(ALL_USED_IDs)+1] = METADATA.MATCH_ID
-METADATA.MATCH <- synTableQuery(paste('select * from', METADATA.MATCH_ID))@values %>%
+METADATA.MATCH <- synapser::synTableQuery(paste('select * from', METADATA.MATCH_ID))$asDataFrame() %>%
   dplyr::rename(SampleID = Investigator_Sample_Name)
 
 # Get picard metrics from synapse
 METADATA.PICARD_ID <- 'syn8489352'
 ALL_USED_IDs[length(ALL_USED_IDs)+1] = METADATA.PICARD_ID
-METADATA.PICARD <- read.table(synGet(METADATA.PICARD_ID)@filePath,sep = '\t', header = T) %>%
+METADATA.PICARD <- read.table(synapser::synGet(METADATA.PICARD_ID)$path,sep = '\t', header = T) %>%
   dplyr::mutate(Sample_Name = gsub('.accepted_hits.merged.nodups.rnaseq_metrics.csv','', sampleFile),
                 Sample_Name = as.numeric(Sample_Name))
 
 # Get metadata
 METADATA_ID <- 'syn8548351'
 ALL_USED_IDs[length(ALL_USED_IDs)+1] = METADATA_ID
-METADATA <- synTableQuery(paste('select * from', METADATA_ID))@values %>%
+METADATA <- synapser::synTableQuery(paste('select * from', METADATA_ID))$asDataFrame() %>%
   dplyr::rename(SampleID = Sample_ID) %>%
-  dplyr::left_join(METADATA.MATCH) %>%
-  dplyr::left_join(METADATA.PICARD)
+  dplyr::full_join(METADATA.MATCH %>%
+                     dplyr::select(-ROW_ID, -ROW_VERSION)) %>%
+  dplyr::full_join(METADATA.PICARD)
 
 # Get gene specific parameters from synapse
-GENE.PARAM = downloadFile('syn8449369')
+GENE.PARAM = fread(synapser::synGet('syn8449369')$path, data.table = F)
 ALL_USED_IDs[length(ALL_USED_IDs)+1] = 'syn8449369'
 
 GENE.LEN = dplyr::select(GENE.PARAM, ensembl_gene_id, gene.length) %>% unique()
@@ -117,19 +120,18 @@ rownames(GENE.GC) = GENE.GC$ensembl_gene_id
 ```{r preprocess.data,cache=TRUE, echo=TRUE}
 # Remove samples with no Sex and Diagnosis information
 METADATA <- METADATA %>%
-  filter(Sample_Name %in% colnames(COUNT)) %>%
-  filter(!is.na(Sex), !is.na(Diagnosis), !is.na(Sample_Name),
-         Age_at_Collection != 'xxx',
-         Days_originally_grown != 'xxx') %>%
-  dplyr::mutate(Diagnosis = factor(Diagnosis,
-                                   levels = c("Control", "Coronal", "Coronal ", "Coronal Synostosis-L", "Coronal Synostosis-R", 
-                                              "Lambdoid", "Lambdoid-L", "Lambdoid-R", "Metopic", "Sagittal"),
-                                   labels = c("Control" = "Control", "Coronal" = "Coronal", "Coronal " = "Coronal", 
-                                              "Coronal Synostosis-L" = "Coronal", "Coronal Synostosis-R" = "Coronal", 
-                                              "Lambdoid" = "Lambdoid", "Lambdoid-L" = "Lambdoid", "Lambdoid-R" = "Lambdoid", 
-                                              "Metopic" = "Metopic", "Sagittal" = "Sagittal"))) %>%
+  dplyr::filter(Sample_Name %in% colnames(COUNT)) %>%
+  dplyr::filter(!is.na(Sex), !is.na(Diagnosis), !is.na(Sample_Name),
+                Age_at_Collection != 'xxx',
+                Days_originally_grown != 'xxx') %>%
+  dplyr::mutate(Diagnosis = gsub('[^[:alnum:]]','_', Diagnosis),
+                Diagnosis = gsub('Coronal_Synostosis_R','Coronal', Diagnosis),
+                Diagnosis = gsub('Coronal_Synostosis_L','Coronal', Diagnosis),
+                Diagnosis = gsub('Lambdoid_R','Lambdoid', Diagnosis),
+                Diagnosis = gsub('Lambdoid_L','Lambdoid', Diagnosis),
+                Diagnosis = gsub('Coronal_','Coronal', Diagnosis),
+                Diagnosis = factor(Diagnosis)) %>%
   droplevels() %>%
-# filter(!(Sample_Name %in% c('163541', '163707'))) %>%
   as.data.frame()
 ```
 
@@ -241,8 +243,8 @@ CQN.GENE_EXPRESSION = cqn(NEW.COUNTS,
 CQN.GENE_EXPRESSION$E = apply(CQN.GENE_EXPRESSION$y+CQN.GENE_EXPRESSION$offset, 1, function(x){
   mn = mean(x, na.rm = T)
   std.dev = sd(x, na.rm = T)
-  x[x <= (mn-3*std.dev)] = mn-3*std.dev
-  x[x >= (mn+3*std.dev)] = mn+3*std.dev
+  x[x <= (mn-3*std.dev)] = 0
+  x[x >= (mn+3*std.dev)] = 0
   return(x)
 }) %>% t
 
@@ -436,17 +438,20 @@ Differential expression is performed on the primary variable by controlling for 
 
 Following model was used
 
-Gx = Diagnosis + RNA\_days\_to\_Harvest + Batch + Sex + PCT\\_CORRECT\\_STRAND\\_READS + Age\\_at\\_Collection +
-     PCT\\_UTR\\_BASES + Days\\_originally\\_grown + MEDIAN\\_CV\\_COVERAGE + MEDIAN\\_5PRIME\\_TO\\_3PRIME\\_BIAS +
-     PCT\\_INTERGENIC\\_BASES + PCT\\_INTRONIC\\_BASES 
+Gx = Diagnosis + RNA\\_days\\_to\\_Harvest + Sex + Batch + Age\\_at\\_Collection + 
+     PCT\\_CORRECT\\_STRAND\\_READS + PCT\\_UTR\\_BASES + Days\\_originally\\_grown + 
+     MEDIAN\\_CV\\_COVERAGE + MEDIAN\\_5PRIME\\_TO\\_3PRIME\\_BIAS
+     
+Genes that are differentially expressed between cranio cases and controls at an FDR <= 0.05 and fold change of 1.2 are
+```{r diff.exp, fig.height=6, fig.width=8, cache=FALSE}
+COVARIATES$Diagnosis.cranio = COVARIATES$Diagnosis
+levels(COVARIATES$Diagnosis.cranio)[levels(COVARIATES$Diagnosis.cranio) != 'Control'] = 'Cranio'
 
-Genes that are differentially expressed at an FDR <= 0.05 are
-```{r diff.exp, fig.height=16, fig.width=18, cache=FALSE}
 # Get design matrix
-varsInModel = c('Batch', 'Sex', 'RNA_days_to_Harvest', 'PCT_CORRECT_STRAND_READS', 'PCT_INTRONIC_BASES', 
-                'MEDIAN_CV_COVERAGE', 'Age_at_Collection', 'Days_originally_grown', 'PCT_INTERGENIC_BASES', 
-                'PCT_UTR_BASES', 'MEDIAN_5PRIME_TO_3PRIME_BIAS')
-DESIGN = getDesignMatrix(COVARIATES[, c(primaryVariable, varsInModel), drop = F], Intercept = F)
+primaryVariable = c('Diagnosis.cranio')
+postAdjustCovars = c("Batch", "Sex", "RNA_days_to_Harvest", "Age_at_Collection", "PCT_CORRECT_STRAND_READS",
+                     "PCT_UTR_BASES", "Days_originally_grown", "MEDIAN_CV_COVERAGE", "MEDIAN_5PRIME_TO_3PRIME_BIAS")   
+DESIGN = getDesignMatrix(COVARIATES[, c(primaryVariable, postAdjustCovars), drop = F], Intercept = F)
 DESIGN$design = DESIGN$design[,linColumnFinder(DESIGN$design)$indepCols]
 
 # Estimate voom weights for dispersion control
@@ -458,110 +463,55 @@ FIT = lmFit(CQN.GENE_EXPRESSION$E,
             weights = VOOM.WEIGHTS$weights)
 
 # Fit contrast
-contrast = paste0('Diagnosis',levels(COVARIATES$Diagnosis)) %>%
-  combn(2) %>%
-  apply(2, function(x){
-    paste(x, collapse = '-')
-  }) %>%
-  c('DiagnosisControl-(DiagnosisCoronal+DiagnosisLambdoid+DiagnosisMetopic+DiagnosisSagittal)/4',
-    'RNA_days_to_Harvest') %>%
-  makeContrasts(contrasts=.,
-                levels = colnames(FIT$coefficients))
+contrast = makeContrasts(contrasts = 'Diagnosis.cranioCranio-Diagnosis.cranioControl',
+                         levels = colnames(FIT$coefficients))
 FIT.CONTR = contrasts.fit(FIT, contrasts=contrast)
 FIT.CONTR = eBayes(FIT.CONTR)
 
 # Get differnetial expression
-DE = lapply(1:11, function(i, FIT){
+DE = lapply(1:dim(contrast)[2], function(i, FIT){
   topTable(FIT, coef=i, number = 50000, confint = T) %>%
     rownameToFirstColumn('ensembl_gene_id')
 }, FIT.CONTR)
-names(DE) = colnames(contrast)[1:11]
+names(DE) = colnames(contrast)
 
 DE1 = DE %>% 
   rbindlist(idcol = 'Comparison') %>%
-  dplyr::mutate(Comparison = gsub('Diagnosis','',Comparison),
-                Comparison = gsub('[^[:alnum:]]','_', Comparison),
-                Comparison = gsub('_Coronal_Lambdoid_Metopic_Sagittal__4', 'Cranio', Comparison),
-                Model = 'Dx+RNADaysToHarvest') %>%
-  tidyr::separate(Comparison, c('reference','against'), sep = '_') %>%
+  dplyr::mutate(Comparison = gsub('Diagnosis.cranio','',Comparison)) %>%
   left_join(GENE.PARAM %>%
               dplyr::select(ensembl_gene_id, hgnc_symbol, percentage_gc_content, gene.length) %>%
-              unique()) %>%
-  dplyr::mutate(Direction = logFC/abs(logFC),
-                Direction = factor(Direction, c(-1,1), c('-1' = 'DOWN', '1' = 'UP')),
-                Direction = as.character(Direction))
-DE1$Direction[DE1$adj.P.Val > 0.05] = 'NONE'
+              unique())
+DE1$Direction = 'NONE'
+DE1$Direction[DE1$adj.P.Val <= 0.05 & DE1$logFC >= log2(1.2)] = 'UP'
+DE1$Direction[DE1$adj.P.Val <= 0.05 & DE1$logFC <= -log2(1.2)] = 'DOWN'
 
 writeLines('Differentially expressed genes at an FDR 0.05')
 tmp = DE1 %>%
-  dplyr::select(ensembl_gene_id, reference, against, Direction) %>%
-  group_by(reference, against, Direction) %>%
+  dplyr::select(ensembl_gene_id, Comparison, Direction) %>%
+  dplyr::group_by(Comparison, Direction) %>%
   dplyr::summarise(FDR_0_05 = length(unique(ensembl_gene_id))) %>%
   dplyr::filter(Direction != 'NONE') %>%
-  spread(Direction, FDR_0_05) 
+  tidyr::spread(Direction, FDR_0_05) 
 kable(tmp)
 
 p = ggplot(DE1, aes(y = -log10(adj.P.Val), x = logFC, color = Direction)) + geom_point() + xlim(c(-1,1))
 p = p + scale_color_manual(values = c('green','grey','red'))
-p = p + facet_grid(reference+.~against, scales = 'fixed')
+p = p + facet_grid(.~Comparison, scales = 'fixed')
 p
-```
-### Differential expression wrt RNA days to harvest
-```{r rna.harvest}
-# Get differnetial expression
-DE2 = topTable(FIT.CONTR, coef=12, number = 50000, confint = T) %>%
-  rownameToFirstColumn('ensembl_gene_id') %>%
-  dplyr::mutate(reference = 'RNA_days_to_Harvest',
-                Model = 'Dx+RNADaysToHarvest') %>%
-  left_join(GENE.PARAM %>%
-              dplyr::select(ensembl_gene_id, hgnc_symbol, percentage_gc_content, gene.length) %>%
-              unique()) %>%
-  dplyr::mutate(Direction = logFC/abs(logFC),
-                Direction = factor(Direction, c(-1,1), c('-1' = 'DOWN', '1' = 'UP')),
-                Direction = as.character(Direction))
-DE2$Direction[DE2$adj.P.Val > 0.05] = 'NONE'
 
-writeLines('Differentially expressed genes at an FDR 0.05')
-tmp = DE2 %>%
-  dplyr::select(ensembl_gene_id, reference, Direction) %>%
-  group_by(reference, Direction) %>%
-  dplyr::summarise(FDR_0_05 = length(unique(ensembl_gene_id))) %>%
-  dplyr::filter(Direction != 'NONE') %>%
-  spread(Direction, FDR_0_05) 
-kable(tmp)
-
-p = ggplot(DE2, aes(y = -log10(adj.P.Val), x = logFC, color = Direction)) + geom_point() + xlim(c(-1,1))
-p = p + scale_color_manual(values = c('green','grey','red')) + theme(legend.position = 'top')
-p = p + facet_grid(.~reference, scales = 'fixed')
-p
+all.model.fit = list('Dx.Cranio+RNADaysToHarvest' = FIT)
+all.de = list('Dx.Cranio+RNADaysToHarvest' = DE1)
 ```
 
-### Differential expression analysis 2
-Differential expression is performed on the primary variable by controlling for covariates identified above
-
-Since RNA\_days\_to\_Harvest is also strongly associated (biologically) with the case control differences, we are explicitly modeling hte case-control variations as an interaction effect
-
-Also, since we are intrested in the sex variations we are explicitly modeling sex
-
-Following model was used
-
-Gx = Diagnosis x RNA\_days\_to\_Harvest x Sex + Batch + PCT\\_CORRECT\\_STRAND\\_READS + Age\\_at\\_Collection +
-     PCT\\_UTR\\_BASES + Days\\_originally\\_grown + MEDIAN\\_CV\\_COVERAGE + MEDIAN\\_5PRIME\\_TO\\_3PRIME\\_BIAS +
-     PCT\\_INTERGENIC\\_BASES + PCT\\_INTRONIC\\_BASES 
-
-Genes that are differentially expressed at an FDR <= 0.05 are
-```{r diff.exp2, fig.height=16, fig.width=18, cache=FALSE}
+Genes that are differentially expressed between cranio subtypes at an FDR <= 0.05 and fold change of 1.2 are
+```{r diff.exp.subtype, fig.height=6, fig.width=20, cache=FALSE}
 # Get design matrix
-COVARIATES$Diagnosis.Sex = factor(paste(COVARIATES$Diagnosis,COVARIATES$Sex, sep = '.'))
-DESIGN = getDesignMatrix(COVARIATES[, c('Diagnosis.Sex', setdiff(postAdjustCovars, 'Sex')), drop = F], Intercept = F)
-ind = grep('Diagnosis.Sex', colnames(DESIGN$design))
-DESIGN$design[,ind] = DESIGN$design[,ind] * DESIGN$design[,'RNA_days_to_Harvest']
-colnames(DESIGN$design)[ind] = paste(colnames(DESIGN$design)[ind], 'RNA_days_to_Harvest', sep = '.')
-DESIGN$design = DESIGN$design[,setdiff(colnames(DESIGN$design), 'RNA_days_to_Harvest')]
+primaryVariable = c('Diagnosis')
+postAdjustCovars = c("Batch", "Sex", "RNA_days_to_Harvest", "Age_at_Collection", "PCT_CORRECT_STRAND_READS",
+                     "PCT_UTR_BASES", "Days_originally_grown", "MEDIAN_CV_COVERAGE", "MEDIAN_5PRIME_TO_3PRIME_BIAS")
+
+DESIGN = getDesignMatrix(COVARIATES[, c(primaryVariable, postAdjustCovars), drop = F], Intercept = F)
 DESIGN$design = DESIGN$design[,linColumnFinder(DESIGN$design)$indepCols]
-colnames(DESIGN$design)[1:10] = c("Control.F.RDH", "Control.M.RDH", "Coronal.F.RDH", "Coronal.M.RDH",
-                                  "Lambdoid.F.RDH", "Lambdoid.M.RDH", "Metopic.F.RDH", "Metopic.M.RDH",
-                                  "Sagittal.F.RDH", "Sagittal.M.RDH")
 
 # Estimate voom weights for dispersion control
 VOOM.WEIGHTS = voom(NEW.COUNTS, design=DESIGN$design, plot=F)
@@ -571,32 +521,13 @@ FIT = lmFit(CQN.GENE_EXPRESSION$E,
             design = DESIGN$design,
             weights = VOOM.WEIGHTS$weights)
 
-# Get residual gene expression
-RESIDUAL.GENE_EXPRESSION = residuals.MArrayLM(FIT, CQN.GENE_EXPRESSION$E)
-varsToAddIn = grep('.RDH', colnames(FIT$coefficients), value = T)
-RESIDUAL.GENE_EXPRESSION = RESIDUAL.GENE_EXPRESSION +
-  (FIT$coefficients[,varsToAddIn] %*% t(FIT$design[,varsToAddIn]))
-
 # Fit contrast
-contrast = c("(Coronal.F.RDH+Coronal.M.RDH-Control.F.RDH-Control.M.RDH)/2",
-             "(Lambdoid.F.RDH+Lambdoid.M.RDH-Control.F.RDH-Control.M.RDH)/2",
-             "(Metopic.F.RDH+Metopic.M.RDH-Control.F.RDH-Control.M.RDH)/2",
-             "(Sagittal.F.RDH+Sagittal.M.RDH-Control.F.RDH-Control.M.RDH)/2",
-             "(Coronal.F.RDH+Coronal.M.RDH+Lambdoid.F.RDH+Lambdoid.M.RDH+Metopic.F.RDH+Metopic.M.RDH+Sagittal.F.RDH+Sagittal.M.RDH)/8 - (Control.F.RDH+Control.M.RDH)/2",
-             "(Coronal.F.RDH+Lambdoid.F.RDH+Metopic.F.RDH+Sagittal.F.RDH)/4 - Control.F.RDH",
-             "(Coronal.M.RDH+Lambdoid.M.RDH+Metopic.M.RDH+Sagittal.M.RDH)/4 - Control.M.RDH",
-             "(Coronal.F.RDH+Lambdoid.F.RDH+Metopic.F.RDH+Sagittal.F.RDH)/4-(Coronal.M.RDH+Lambdoid.M.RDH+Metopic.M.RDH+Sagittal.M.RDH)/4",
-             "Control.F.RDH-Control.M.RDH",
-             "Coronal.F.RDH-Control.F.RDH",
-             "Coronal.M.RDH-Control.M.RDH",
-             "(Coronal.F.RDH+Coronal.M.RDH-Sagittal.F.RDH-Sagittal.M.RDH)/2",
-             "(Coronal.F.RDH+Coronal.M.RDH-Metopic.F.RDH-Metopic.M.RDH)/2",
-             "(Coronal.F.RDH+Coronal.M.RDH-Lambdoid.F.RDH-Lambdoid.M.RDH)/2",
-             "(Sagittal.F.RDH+Sagittal.M.RDH-Metopic.F.RDH-Metopic.M.RDH)/2",
-             "(Sagittal.F.RDH+Sagittal.M.RDH-Lambdoid.F.RDH-Lambdoid.M.RDH)/2",
-             "(Lambdoid.F.RDH+Lambdoid.M.RDH-Metopic.F.RDH-Metopic.M.RDH)/2",
-             "Coronal.M.RDH-Sagittal.M.RDH",
-             "Coronal.F.RDH-Sagittal.F.RDH") %>%
+contrast = paste0('Diagnosis',c("Sagittal", "Metopic", "Coronal", "Lambdoid", "Control")) %>%
+  combn(2) %>%
+  apply(2, function(x){
+    paste(x, collapse = '-')
+  }) %>%
+  c('RNA_days_to_Harvest') %>%
   makeContrasts(contrasts=.,
                 levels = colnames(FIT$coefficients))
 FIT.CONTR = contrasts.fit(FIT, contrasts=contrast)
@@ -607,78 +538,213 @@ DE = lapply(1:dim(contrast)[2], function(i, FIT){
   topTable(FIT, coef=i, number = 50000, confint = T) %>%
     rownameToFirstColumn('ensembl_gene_id')
 }, FIT.CONTR)
-names(DE) = c("Coronal-Control", "Lambdoid-Control", "Metopic-Control", "Sagittal-Control",
-              "Cranio-Control", "Cranio.F-Control.F", "Cranio.M-Control.M", "Cranio.F-Cranio.M",
-              "Control.F-Control.M", "Coronal.F-Control.F", "Coronal.M-Control.M",
-              "Coronal-Sagittal", "Coronal-Metopic", "Coronal-Lambdoid",
-              "Sagittal-Metopic", "Sagittal-Lambdoid", "Lambdoid-Metopic",
-              "Coronal.M-Sagittal.M", "Coronal.F-Sagittal.F")
+names(DE) = colnames(contrast)
 
-DE3 = DE %>% 
+DE1 = DE %>% 
   rbindlist(idcol = 'Comparison') %>%
-  dplyr::mutate(Model = 'DxxRNADaysToharvest') %>%
-  tidyr::separate(Comparison, c('reference','against'), sep = '-') %>%
+  dplyr::mutate(Comparison = gsub('Diagnosis','',Comparison)) %>%
   left_join(GENE.PARAM %>%
               dplyr::select(ensembl_gene_id, hgnc_symbol, percentage_gc_content, gene.length) %>%
-              unique()) %>%
-  dplyr::mutate(Direction = logFC/abs(logFC),
-                Direction = factor(Direction, c(-1,1), c('-1' = 'DOWN', '1' = 'UP')),
-                Direction = as.character(Direction))
-DE3$Direction[DE3$adj.P.Val > 0.05] = 'NONE'
+              unique())
+DE1$Direction = 'NONE'
+DE1$Direction[DE1$adj.P.Val <= 0.05 & DE1$logFC >= log2(1.2)] = 'UP'
+DE1$Direction[DE1$adj.P.Val <= 0.05 & DE1$logFC <= -log2(1.2)] = 'DOWN'
 
 writeLines('Differentially expressed genes at an FDR 0.05')
-tmp = DE3 %>%
-  dplyr::select(ensembl_gene_id, reference, against, Direction) %>%
-  group_by(reference, against, Direction) %>%
+tmp = DE1 %>%
+  dplyr::select(ensembl_gene_id, Comparison, Direction) %>%
+  dplyr::group_by(Comparison, Direction) %>%
   dplyr::summarise(FDR_0_05 = length(unique(ensembl_gene_id))) %>%
   dplyr::filter(Direction != 'NONE') %>%
-  spread(Direction, FDR_0_05) 
+  tidyr::spread(Direction, FDR_0_05) 
 kable(tmp)
 
-p = ggplot(DE3, aes(y = -log10(adj.P.Val), x = logFC, color = Direction)) + geom_point() + xlim(c(-1,1))
+p = ggplot(DE1, aes(y = -log10(adj.P.Val), x = logFC, color = Direction)) + geom_point() + xlim(c(-1,1))
 p = p + scale_color_manual(values = c('green','grey','red'))
-p = p + facet_grid(reference+.~against, scales = 'fixed')
+p = p + facet_grid(.~Comparison, scales = 'fixed')
 p
 
-DE = rbindlist(list(DE1, DE2, DE3), use.names = T, fill = T)
+all.model.fit = c(all.model.fit, list('Dx+RNADaysToHarvest' = FIT))
+all.de = c(all.de, list('Dx+RNADaysToHarvest' = DE1))
+```
+
+### Differential expression analysis 2
+Differential expression is performed on the primary variable by controlling for covariates identified above
+
+Since RNA\_days\_to\_harvest is also strongly associated (biologically) with the case control differences, we are explicitly modeling the case-control variations as an interaction effect
+
+Following model was used
+
+Gx = Diagnosis x RNA\\_days\\_to\\_Harvest + Sex + Batch + Age\\_at\\_Collection + 
+     PCT\\_CORRECT\\_STRAND\\_READS + PCT\\_UTR\\_BASES + Days\\_originally\\_grown + 
+     MEDIAN\\_CV\\_COVERAGE + MEDIAN\\_5PRIME\\_TO\\_3PRIME\\_BIAS
+
+Genes that are differentially expressed between case and control at an FDR <= 0.05 and fold change of 1.2 are
+```{r diff.exp2, fig.height=6, fig.width=8, cache=FALSE}
+# Get design matrix
+primaryVariable = c('Diagnosis.cranio')
+postAdjustCovars = c("Batch", "Sex", "RNA_days_to_Harvest", "Age_at_Collection", "PCT_CORRECT_STRAND_READS",
+                     "PCT_UTR_BASES", "Days_originally_grown", "MEDIAN_CV_COVERAGE", "MEDIAN_5PRIME_TO_3PRIME_BIAS")
+
+DESIGN = getDesignMatrix(COVARIATES[, c(primaryVariable, postAdjustCovars), drop = F], Intercept = F)
+DESIGN$design = DESIGN$design[,linColumnFinder(DESIGN$design)$indepCols]
+ind = grep('Diagnosis.cranio', colnames(DESIGN$design), value = T)
+DESIGN$design[,ind] = DESIGN$design[,ind] * DESIGN$design[,'RNA_days_to_Harvest']
+DESIGN$design = DESIGN$design[,setdiff(colnames(DESIGN$design), 'RNA_days_to_Harvest')] 
+
+# Estimate voom weights for dispersion control
+VOOM.WEIGHTS = voom(NEW.COUNTS, design=DESIGN$design, plot=F)
+
+# Fit linear model using new weights and new design
+FIT = lmFit(CQN.GENE_EXPRESSION$E,
+            design = DESIGN$design,
+            weights = VOOM.WEIGHTS$weights)
+
+# Fit contrast
+contrast = makeContrasts(contrasts = 'Diagnosis.cranioCranio-Diagnosis.cranioControl',
+                         levels = colnames(FIT$coefficients))
+FIT.CONTR = contrasts.fit(FIT, contrasts=contrast)
+FIT.CONTR = eBayes(FIT.CONTR)
+
+# Get differnetial expression
+DE = lapply(1:dim(contrast)[2], function(i, FIT){
+  topTable(FIT, coef=i, number = 50000, confint = T) %>%
+    rownameToFirstColumn('ensembl_gene_id')
+}, FIT.CONTR)
+names(DE) = colnames(contrast)
+
+DE1 = DE %>% 
+  rbindlist(idcol = 'Comparison') %>%
+  dplyr::mutate(Comparison = gsub('Diagnosis.cranio','',Comparison)) %>%
+  left_join(GENE.PARAM %>%
+              dplyr::select(ensembl_gene_id, hgnc_symbol, percentage_gc_content, gene.length) %>%
+              unique())
+DE1$Direction = 'NONE'
+DE1$Direction[DE1$adj.P.Val <= 0.05 & DE1$logFC >= log2(1.2)] = 'UP'
+DE1$Direction[DE1$adj.P.Val <= 0.05 & DE1$logFC <= -log2(1.2)] = 'DOWN'
+
+writeLines('Differentially expressed genes at an FDR 0.05 and fold change of 1.2')
+tmp = DE1 %>%
+  dplyr::select(ensembl_gene_id, Comparison, Direction) %>%
+  dplyr::group_by(Comparison, Direction) %>%
+  dplyr::summarise(FDR_0_05 = length(unique(ensembl_gene_id))) %>%
+  dplyr::filter(Direction != 'NONE') %>%
+  tidyr::spread(Direction, FDR_0_05) 
+kable(tmp)
+
+p = ggplot(DE1, aes(y = -log10(adj.P.Val), x = logFC, color = Direction)) + geom_point() + xlim(c(-1,1))
+p = p + scale_color_manual(values = c('green','grey','red'))
+p = p + facet_grid(.~Comparison, scales = 'fixed')
+p
+
+all.model.fit = c(all.model.fit, list('Dx.cranioxRNADaysToHarvest' = FIT))
+all.de = c(all.de, list('Dx.cranioxRNADaysToHarvest' = DE1))
+```
+Genes that are differentially expressed between cranio subtypes at an FDR <= 0.05 and fold change of 1.2 are
+```{r diff.exp2.subtypes, fig.height=6, fig.width=18, cache=FALSE}
+# Get design matrix
+primaryVariable = c('Diagnosis')
+postAdjustCovars = c("Batch", "Sex", "RNA_days_to_Harvest", "Age_at_Collection", "PCT_CORRECT_STRAND_READS",
+                     "PCT_UTR_BASES", "Days_originally_grown", "MEDIAN_CV_COVERAGE", "MEDIAN_5PRIME_TO_3PRIME_BIAS")
+
+DESIGN = getDesignMatrix(COVARIATES[, c(primaryVariable, postAdjustCovars), drop = F], Intercept = F)
+DESIGN$design = DESIGN$design[,linColumnFinder(DESIGN$design)$indepCols]
+ind = grep('Diagnosis', colnames(DESIGN$design), value = T)
+DESIGN$design[,ind] = DESIGN$design[,ind] * DESIGN$design[,'RNA_days_to_Harvest']
+DESIGN$design = DESIGN$design[,setdiff(colnames(DESIGN$design), 'RNA_days_to_Harvest')] 
+
+# Estimate voom weights for dispersion control
+VOOM.WEIGHTS = voom(NEW.COUNTS, design=DESIGN$design, plot=F)
+
+# Fit linear model using new weights and new design
+FIT = lmFit(CQN.GENE_EXPRESSION$E,
+            design = DESIGN$design,
+            weights = VOOM.WEIGHTS$weights)
+
+# Fit contrast
+contrast = paste0('Diagnosis',c("Sagittal", "Metopic", "Coronal", "Lambdoid", "Control")) %>%
+  combn(2) %>%
+  apply(2, function(x){
+    paste(x, collapse = '-')
+  }) %>%
+  makeContrasts(contrasts=.,
+                levels = colnames(FIT$coefficients))
+FIT.CONTR = contrasts.fit(FIT, contrasts=contrast)
+FIT.CONTR = eBayes(FIT.CONTR)
+
+# Get differnetial expression
+DE = lapply(1:dim(contrast)[2], function(i, FIT){
+  topTable(FIT, coef=i, number = 50000, confint = T) %>%
+    rownameToFirstColumn('ensembl_gene_id')
+}, FIT.CONTR)
+names(DE) = colnames(contrast)
+
+DE1 = DE %>% 
+  rbindlist(idcol = 'Comparison') %>%
+  dplyr::mutate(Comparison = gsub('Diagnosis','',Comparison)) %>%
+  left_join(GENE.PARAM %>%
+              dplyr::select(ensembl_gene_id, hgnc_symbol, percentage_gc_content, gene.length) %>%
+              unique())
+DE1$Direction = 'NONE'
+DE1$Direction[DE1$adj.P.Val <= 0.05 & DE1$logFC >= log2(1.2)] = 'UP'
+DE1$Direction[DE1$adj.P.Val <= 0.05 & DE1$logFC <= -log2(1.2)] = 'DOWN'
+
+writeLines('Differentially expressed genes at an FDR 0.05 and fold change of 1.2')
+tmp = DE1 %>%
+  dplyr::select(ensembl_gene_id, Comparison, Direction) %>%
+  dplyr::group_by(Comparison, Direction) %>%
+  dplyr::summarise(FDR_0_05 = length(unique(ensembl_gene_id))) %>%
+  dplyr::filter(Direction != 'NONE') %>%
+  tidyr::spread(Direction, FDR_0_05) 
+kable(tmp)
+
+p = ggplot(DE1, aes(y = -log10(adj.P.Val), x = logFC, color = Direction)) + geom_point() + xlim(c(-1,1))
+p = p + scale_color_manual(values = c('green','grey','red'))
+p = p + facet_grid(.~Comparison, scales = 'fixed')
+p
+
+all.model.fit = c(all.model.fit, list('DxxRNADaysToHarvest' = FIT))
+all.de = c(all.de, list('DxxRNADaysToHarvest' = DE1))
 ```
 
 ### Associate differential expression results with gc content, gene length and average expression
 ```{r associate.de, fig.height=6, fig.width=15}
 pl = list()
-pl[[1]] = ggplot(DE1 %>% dplyr::filter(reference == 'Control', against == 'Cranio'), 
+DE = data.table::rbindlist(all.de, idcol = 'Model')
+pl[[1]] = ggplot(DE %>% dplyr::filter(Comparison == 'Cranio-Control'), 
                  aes(x = log10(gene.length), y = logFC, color = Direction)) + geom_point() 
 pl[[1]] = pl[[1]] + geom_smooth(method = 'loess', inherit.aes = FALSE, aes(x = log10(gene.length), y = logFC))
-pl[[1]] = pl[[1]] + facet_grid(reference~.+against) + scale_color_manual(values = c('grey'))
+pl[[1]] = pl[[1]] + scale_color_manual(values = c('green', 'grey', 'red'))
 pl[[1]] = pl[[1]] + theme(legend.position = 'top')
 
-pl[[2]] = ggplot(DE1 %>% dplyr::filter(reference == 'Control', against == 'Cranio'), 
+pl[[2]] = ggplot(DE %>% dplyr::filter(Comparison == 'Cranio-Control'), 
                  aes(x = percentage_gc_content, y = logFC, color = Direction)) + geom_point()
 pl[[2]] = pl[[2]] + geom_smooth(method = 'loess', inherit.aes = FALSE, aes(x = percentage_gc_content, y = logFC))
-pl[[2]] = pl[[2]] + facet_grid(reference~.+against) + scale_color_manual(values = c('grey'))
+pl[[2]] = pl[[2]] + scale_color_manual(values = c('green', 'grey', 'red'))
 pl[[2]] = pl[[2]] + theme(legend.position = 'top')
 
-pl[[3]] = ggplot(DE1 %>% dplyr::filter(reference == 'Control', against == 'Cranio'), 
+pl[[3]] = ggplot(DE %>% dplyr::filter(Comparison == 'Cranio-Control'), 
                  aes(x = AveExpr, y = logFC, color = Direction)) + geom_point()
 pl[[3]] = pl[[3]] + geom_smooth(method = 'loess', inherit.aes = FALSE, aes(x = AveExpr, y = logFC))
-pl[[3]] = pl[[3]] + facet_grid(reference~.+against) + scale_color_manual(values = c('grey'))
+pl[[3]] = pl[[3]] + scale_color_manual(values = c('green', 'grey', 'red'))
 pl[[3]] = pl[[3]] + theme(legend.position = 'top')
 
 multiplot(plotlist = pl, cols = 3)
 ```
+
 ### Pathway enrichment analysis
 ```{r enrichment}
-GL_OBJ = synGet('syn4867851')
+GL_OBJ = synapser::synGet('syn4867851')
 ALL_USED_IDs = c(ALL_USED_IDs, GL_OBJ$properties$id)
-load(GL_OBJ@filePath)
+load(GL_OBJ$path)
 
 gsets = c("GO_Biological_Process", "Reactome_2015", "WikiPathways_2015")
 GeneSets.Enrichr = GeneSets[gsets]
 
 # Download cranio related gene sets from synapse
-GL_OBJ = synGet('syn5752718');
+GL_OBJ = synapser::synGet('syn5752718');
 ALL_USED_IDs = c(ALL_USED_IDs, GL_OBJ$properties$id)
-load(GL_OBJ@filePath)
+load(GL_OBJ$path)
 
 GeneSets.Cranio = list(Cranio = GeneSets[c("Del-Dup_Osteo", "IGF1", "Synostosis", "Thyroid")])
 GeneSets = c(GeneSets.Enrichr, GeneSets.Cranio)
@@ -690,7 +756,7 @@ GeneSets = lapply(GeneSets, function(x){
 backGroundGenes = unique(DE$hgnc_symbol)
 
 # Get gene list to test
-enrichmentResults = plyr::ddply(DE, .(reference, against, Model), .fun = function(x, backGroundGenes, geneSets){
+enrichmentResults = plyr::ddply(DE, .(Model, Comparison), .fun = function(x, backGroundGenes, geneSets){
   genesToTest = unique(x$hgnc_symbol[x$adj.P.Val <= 0.05])
   
   all.results = plyr::ldply(geneSets, .fun = function(y, x, backGroundGenes){
@@ -701,7 +767,6 @@ enrichmentResults = plyr::ddply(DE, .(reference, against, Model), .fun = functio
     dplyr::mutate(fdr = p.adjust(pval))
 }, backGroundGenes, GeneSets, .progress = 'text', .parallel = T, .paropts = list(.packages = c('CovariateAnalysis', 'dplyr')))
 ```
-
 ### Store files in synapse
 ```{r synapse.store, include=FALSE, eval=TRUE, cache=FALSE}
 # Set annotations
@@ -722,90 +787,92 @@ all.annotations = list(
 )
 
 # Code
-CODE <- Folder(name = "Case control and subtype differential expression (validation cohort)", parentId = parentId)
-annotations(CODE) = all.annotations
-CODE <- synStore(CODE)
+CODE <- synapser::Folder(name = "Case control and subtype differential expression (Cohort 2)", parentId = parentId)
+CODE <- synapser::synStore(CODE)
+tmp = synapser::synSetAnnotations(CODE$properties$id, annotations = all.annotations)
 
 # Store covariates
 COVARIATES = rownameToFirstColumn(COVARIATES, 'SampleID')
 write.table(COVARIATES, file = 'CRANIO2_Covariates.tsv', sep = '\t', row.names=F, quote=F)
-COV_OBJ = File('CRANIO2_Covariates.tsv', name = 'Covariates', parentId = CODE$properties$id)
-annotations(COV_OBJ) = annotations(CODE)
-annotations(COV_OBJ)$dataSubType = 'covariates'
-COV_OBJ = synStore(COV_OBJ, used = ALL_USED_IDs, activityName = activityName, 
-                   executed = thisFile, activityDescription = activityDescription)
+COV_OBJ = synapser::File('CRANIO2_Covariates.tsv', name = 'Covariates', parentId = CODE$properties$id)
+COV_OBJ = synapser::synStore(COV_OBJ, used = ALL_USED_IDs, activityName = activityName, 
+                             executed = thisFile, activityDescription = activityDescription)
+all.annotations$dataSubType = 'covariates'
+tmp = synapser::synSetAnnotations(COV_OBJ$properties$id, list = all.annotations)
 
 # Store filtered counts
 PROCESSED_COUNTS$filteredExprMatrix$counts %>%
   rownameToFirstColumn('ensembl_gene_id') %>%
   write.table(file = 'CRANIO2_Counts.tsv', sep = '\t', row.names=F, quote=F)
-COUNT_OBJ = File('CRANIO2_Counts.tsv', name = 'Counts (filtered raw)', parentId = CODE$properties$id)
-annotations(COUNT_OBJ) = annotations(CODE)
-annotations(COUNT_OBJ)$dataSubType = 'filteredCounts'
-COUNT_OBJ = synStore(COUNT_OBJ, activity = synGetActivity(COV_OBJ$properties$id))
+COUNT_OBJ = synapser::File('CRANIO2_Counts.tsv', name = 'Counts (filtered raw)', parentId = CODE$properties$id)
+COUNT_OBJ = synapser::synStore(COUNT_OBJ, activity = synapser::synGetProvenance(COV_OBJ$properties$id))
+all.annotations$dataSubType = 'filteredCounts'
+tmp = synapser::synSetAnnotations(COUNT_OBJ$properties$id, list = all.annotations)
 
 # Store logCPM
 CQN.GENE_EXPRESSION$y %>%
   rownameToFirstColumn('ensembl_gene_id') %>%
   write.table(file = 'CRANIO2_logCPM.tsv', sep = '\t', row.names=F, quote=F)
-LCOUNT_OBJ = File('CRANIO2_logCPM.tsv', name = 'Counts (filtered logCPM)', parentId = CODE$properties$id)
-annotations(LCOUNT_OBJ) = annotations(CODE)
-annotations(LCOUNT_OBJ)$dataSubType = 'filteredLCPM'
-LCOUNT_OBJ = synStore(LCOUNT_OBJ, activity = synGetActivity(COV_OBJ$properties$id))
+LCOUNT_OBJ = synapser::File('CRANIO2_logCPM.tsv', name = 'Counts (filtered logCPM)', parentId = CODE$properties$id)
+LCOUNT_OBJ = synapser::synStore(LCOUNT_OBJ, activity = synapser::synGetProvenance(COV_OBJ$properties$id))
+all.annotations$dataSubType = 'filteredLCPM'
+tmp = synapser::synSetAnnotations(LCOUNT_OBJ$properties$id, list = all.annotations)
 
 # Store cqn offsets
 CQN.GENE_EXPRESSION$offset %>%
   rownameToFirstColumn('ensembl_gene_id') %>%
   write.table(file = 'CRANIO2_offset.tsv', sep = '\t', row.names=F, quote=F)
-OFFSET_OBJ = File('CRANIO2_offset.tsv', name = 'Gene length and GC content offset', parentId = CODE$properties$id)
-annotations(OFFSET_OBJ) = annotations(CODE)
-annotations(OFFSET_OBJ)$dataSubType = 'offset'
-OFFSET_OBJ = synStore(OFFSET_OBJ, activity = synGetActivity(COV_OBJ$properties$id))
+OFFSET_OBJ = synapser::File('CRANIO2_offset.tsv', name = 'Gene length and GC content offset', parentId = CODE$properties$id)
+OFFSET_OBJ = synapser::synStore(OFFSET_OBJ, activity = synapser::synGetProvenance(COV_OBJ$properties$id))
+all.annotations$dataSubType = 'offset'
+tmp = synapser::synSetAnnotations(OFFSET_OBJ$properties$id, list = all.annotations)
 
 # Store winsorised data
 CQN.GENE_EXPRESSION$E %>%
   rownameToFirstColumn('ensembl_gene_id') %>%
-  write.table(file = 'CRANIO1_winlcpm.tsv', sep = '\t', row.names=F, quote=F)
-WLCOUNT_OBJ = File('CRANIO1_winlcpm.tsv', name = 'Winsorised logCPM', parentId = CODE$properties$id)
-annotations(WLCOUNT_OBJ) = annotations(CODE)
-annotations(WLCOUNT_OBJ)$dataSubType = 'winLcpm'
-WLCOUNT_OBJ = synStore(WLCOUNT_OBJ, activity = synGetActivity(COV_OBJ$properties$id))
+  write.table(file = 'CRANIO2_winlcpm.tsv', sep = '\t', row.names=F, quote=F)
+WLCOUNT_OBJ = synapser::File('CRANIO2_winlcpm.tsv', name = 'Winsorised logCPM', parentId = CODE$properties$id)
+WLCOUNT_OBJ = synapser::synStore(WLCOUNT_OBJ, activity = synapser::synGetProvenance(COV_OBJ$properties$id))
+all.annotations$dataSubType = 'winLcpm'
+tmp = synapser::synSetAnnotations(WLCOUNT_OBJ$properties$id, list = all.annotations)
 
 # Store design matrix
 DESIGN$design %>%
   rownameToFirstColumn('SampleID') %>%
   write.table(file = 'CRANIO2_Design.tsv', sep = '\t', row.names=F, quote=F)
-DM_OBJ = File('CRANIO2_Design.tsv', name = 'Design Matrix', parentId = CODE$properties$id)
-annotations(DM_OBJ) = annotations(CODE)
-annotations(DM_OBJ)$dataSubType = 'designMatrix'
-DM_OBJ = synStore(DM_OBJ, activity = synGetActivity(COV_OBJ$properties$id))
+DM_OBJ = synapser::File('CRANIO2_Design.tsv', name = 'Design Matrix', parentId = CODE$properties$id)
+DM_OBJ = synapser::synStore(DM_OBJ, activity = synapser::synGetProvenance(COV_OBJ$properties$id))
+all.annotations$dataSubType = 'designMatrix'
+tmp = synapser::synSetAnnotations(DM_OBJ$properties$id, list = all.annotations)
 
 # Store residual gene expression for network analysis
 RESIDUAL.GENE_EXPRESSION %>%
   rownameToFirstColumn('ensembl_gene_id') %>%
   write.table(file = 'CRANIO2_netResidualExpression.tsv', sep = '\t', row.names=F, quote=F)
-nEXP_OBJ = File('CRANIO2_netResidualExpression.tsv', 
-                name = 'Normalised, covariates removed residual expression (for network analysis)', 
-                parentId = CODE$properties$id)
-annotations(nEXP_OBJ) = annotations(CODE)
-annotations(nEXP_OBJ)$dataSubType = 'residualGeneExpForNetAnlz'
-nEXP_OBJ = synStore(nEXP_OBJ, activity = synGetActivity(COV_OBJ$properties$id))
+nEXP_OBJ = synapser::File('CRANIO2_netResidualExpression.tsv', 
+                          name = 'Normalised, covariates removed residual expression (for network analysis)', 
+                          parentId = CODE$properties$id)
+nEXP_OBJ = synapser::synStore(nEXP_OBJ, activity = synapser::synGetProvenance(COV_OBJ$properties$id))
+all.annotations$dataSubType = 'residualGeneExpForNetAnlz'
+tmp = synapser::synSetAnnotations(nEXP_OBJ$properties$id, list = all.annotations)
 
 # Store differential expression results
 write.table(DE, file = 'CRANIO2_DiffExpression.tsv', sep = '\t', row.names=F, quote=F)
-DEXP_OBJ = File('CRANIO2_DiffExpression.tsv', name = 'Differential Expression Results', 
-                parentId = CODE$properties$id)
-annotations(DEXP_OBJ) = annotations(CODE)
-annotations(DEXP_OBJ)$dataSubType = 'diffExp'
-DEXP_OBJ = synStore(DEXP_OBJ, activity = synGetActivity(COV_OBJ$properties$id))
+DEXP_OBJ = synapser::File('CRANIO2_DiffExpression.tsv', 
+                          name = 'Differential Expression Results', 
+                          parentId = CODE$properties$id)
+DEXP_OBJ = synapser::synStore(DEXP_OBJ, activity = synapser::synGetProvenance(COV_OBJ$properties$id))
+all.annotations$dataSubType = 'diffExp'
+tmp = synapser::synSetAnnotations(DEXP_OBJ$properties$id, list = all.annotations)
 
 # Store enrichment results
 write.table(enrichmentResults, file = 'CRANIO2_EnrichmentAnalysis.tsv', sep = '\t', row.names=F, quote=F)
-ENRICH_OBJ = File('CRANIO2_EnrichmentAnalysis.tsv', name = 'Enrichment Analysis (Differential Expression)', 
-                  parentId = CODE$properties$id)
-annotations(ENRICH_OBJ) = annotations(CODE)
-annotations(ENRICH_OBJ)$dataSubType = 'enrichAnlz'
-ENRICH_OBJ = synStore(ENRICH_OBJ, activity = synGetActivity(COV_OBJ$properties$id))
+ENRICH_OBJ = synapser::File('CRANIO2_EnrichmentAnalysis.tsv', 
+                            name = 'Enrichment Analysis (Differential Expression)', 
+                            parentId = CODE$properties$id)
+ENRICH_OBJ = synapser::synStore(ENRICH_OBJ, activity = synapser::synGetProvenance(COV_OBJ$properties$id))
+all.annotations$dataSubType = 'enrichAnlz'
+tmp = synapser::synSetAnnotations(ENRICH_OBJ$properties$id, list = all.annotations)
 ```
 |  *Results*                                  |  *SynapseID*                     |
 |  -----------------------------------------  |   ---------                      |
