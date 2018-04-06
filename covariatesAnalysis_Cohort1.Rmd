@@ -802,7 +802,7 @@ PROCESSED_COUNTS$filteredExprMatrix$counts %>%
   rownameToFirstColumn('ensembl_gene_id') %>%
   write.table(file = 'CRANIO1_Counts.tsv', sep = '\t', row.names=F, quote=F)
 COUNT_OBJ = synapser::File('CRANIO1_Counts.tsv', name = 'Counts (filtered raw)', parentId = CODE$properties$id)
-COUNT_OBJ = synasper::synStore(COUNT_OBJ, activity = synapser::synGetProvenance(COV_OBJ$properties$id))
+COUNT_OBJ = synapser::synStore(COUNT_OBJ, activity = synapser::synGetProvenance(COV_OBJ$properties$id))
 all.annotations$dataSubType = 'filteredCounts'
 tmp = synapser::synSetAnnotations(COUNT_OBJ$properties$id, list = all.annotations)
 
@@ -813,25 +813,25 @@ CQN.GENE_EXPRESSION$y %>%
 LCOUNT_OBJ = synapser::File('CRANIO1_logCPM.tsv', name = 'Counts (filtered logCPM)', parentId = CODE$properties$id)
 LCOUNT_OBJ = synapser::synStore(LCOUNT_OBJ, activity = synapser::synGetProvenance(COV_OBJ$properties$id))
 all.annotations$dataSubType = 'filteredLCPM'
-tmp = synapser::synSetAnnotations(LCOUN_OBJ$properties$id, list = all.annotations)
+tmp = synapser::synSetAnnotations(LCOUNT_OBJ$properties$id, list = all.annotations)
 
 # Store cqn offsets
 CQN.GENE_EXPRESSION$offset %>%
   rownameToFirstColumn('ensembl_gene_id') %>%
   write.table(file = 'CRANIO1_offset.tsv', sep = '\t', row.names=F, quote=F)
 OFFSET_OBJ = synapser::File('CRANIO1_offset.tsv', name = 'Gene length and GC content offset', parentId = CODE$properties$id)
-OFFSET_OBJ = synapser::synStore(OFFSET_OBJ, activity = synGetActivity(COV_OBJ$properties$id))
+OFFSET_OBJ = synapser::synStore(OFFSET_OBJ, activity = synapser::synGetProvenance(COV_OBJ$properties$id))
 all.annotations$dataSubType = 'offset'
-tmp = synasper::synSetAnnotations(OFFSET_OBJ$properties$id, list = all.annotations)
+tmp = synapser::synSetAnnotations(OFFSET_OBJ$properties$id, list = all.annotations)
 
 # Store winsorised data
 CQN.GENE_EXPRESSION$E %>%
   rownameToFirstColumn('ensembl_gene_id') %>%
   write.table(file = 'CRANIO1_winlcpm.tsv', sep = '\t', row.names=F, quote=F)
 WLCOUNT_OBJ = synapser::File('CRANIO1_winlcpm.tsv', name = 'Winsorised logCPM', parentId = CODE$properties$id)
-WLCOUNT_OBJ = synapser::synStore(WLCOUNT_OBJ, activity = synGetActivity(COV_OBJ$properties$id))
+WLCOUNT_OBJ = synapser::synStore(WLCOUNT_OBJ, activity = synapser::synGetProvenance(COV_OBJ$properties$id))
 all.annotations$dataSubType = 'winLcpm'
-tmp = synasper::synSetAnnotations(WLCOUNT_OBJ$properties$id, list = all.annotations)
+tmp = synapser::synSetAnnotations(WLCOUNT_OBJ$properties$id, list = all.annotations)
 
 # Store design matrix
 DESIGN$design %>%
@@ -840,7 +840,7 @@ DESIGN$design %>%
 DM_OBJ = synapser::File('CRANIO1_Design.tsv', name = 'Design Matrix', parentId = CODE$properties$id)
 DM_OBJ = synapser::synStore(DM_OBJ, activity = synapser::synGetProvenance(COV_OBJ$properties$id))
 all.annotations$dataSubType = 'designMatrix'
-tmp = synasper::synSetAnnotations(DM_OBJ$properties$id, list = all.annotations)
+tmp = synapser::synSetAnnotations(DM_OBJ$properties$id, list = all.annotations)
 
 # Store residual gene expression for network analysis
 RESIDUAL.GENE_EXPRESSION %>%
@@ -851,7 +851,7 @@ nEXP_OBJ = synapser::File('CRANIO1_netResidualExpression.tsv',
                           parentId = CODE$properties$id)
 nEXP_OBJ = synapser::synStore(nEXP_OBJ, activity = synapser::synGetProvenance(COV_OBJ$properties$id))
 all.annotations$dataSubType = 'residualGeneExpForNetAnlz'
-tmp = synasper::synSetAnnotations(nEXP_OBJ$properties$id, list = all.annotations)
+tmp = synapser::synSetAnnotations(nEXP_OBJ$properties$id, list = all.annotations)
 
 # Store differential expression results
 write.table(DE, file = 'CRANIO1_DiffExpression.tsv', sep = '\t', row.names=F, quote=F)
@@ -860,7 +860,7 @@ DEXP_OBJ = synapser::File('CRANIO1_DiffExpression.tsv',
                           parentId = CODE$properties$id)
 DEXP_OBJ = synapser::synStore(DEXP_OBJ, activity = synapser::synGetProvenance(COV_OBJ$properties$id))
 all.annotations$dataSubType = 'diffExp'
-tmp = synasper::synSetAnnotations(DEXP_OBJ$properties$id, list = all.annotations)
+tmp = synapser::synSetAnnotations(DEXP_OBJ$properties$id, list = all.annotations)
 
 # Store enrichment results
 write.table(enrichmentResults, file = 'CRANIO2_EnrichmentAnalysis.tsv', sep = '\t', row.names=F, quote=F)
