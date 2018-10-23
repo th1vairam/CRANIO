@@ -1,8 +1,10 @@
 ---
 title: "MEGENA module conservation analysis between cohort 1 and 2"
 author: "Thanneer Perumal"
-output: html_notebook
-editor_options: 
+output:
+  html_document:
+    df_print: paged
+editor_options:
   chunk_output_type: console
 ---
 ### Load libraries
@@ -211,7 +213,7 @@ enrich.de = plyr::ldply(mod, .fun = function(c1, deGS, bckGenes){
   }, deGS, bckGenes, .id = 'subType')
 },de.gs, bck.genes, .id = 'cohort') %>%
   dplyr::rename(Cohort = cohort, SubType = folder.name) %>%
-  dplyr::group_by(cohort, subType) %>%
+  dplyr::group_by(Cohort, SubType) %>%
   dplyr::mutate(FDR = p.adjust(pval, method = 'BH'),
                 Category = 'DifferentialExpression')
 
@@ -219,8 +221,8 @@ enrich = list(enrich.results, enrich.de) %>%
   data.table::rbindlist(use.names = T, fill = T)
 ```
 
-
-```{r}
+Annotate modules with pathway enrichment
+```{r annot.module}
 conserved.mod.annotation = conserved.mod2 %>%
   dplyr::filter(Z.summary <= 3) %>%
   dplyr::rename(Cohort = cohort, SubType = reference) %>%
@@ -232,4 +234,3 @@ conserved.mod.annotation = conserved.mod2 %>%
   dplyr::summarise(SetName = paste(unique(SetName), collapse = ', ')) %>%
   kable()
 ```
-
