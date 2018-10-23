@@ -1,0 +1,198 @@
+---
+title: "Differential expression driver analysis for conserved MEGENA modules"
+author: "Thanneer Perumal"
+editor_options: 
+  chunk_output_type: console
+---
+### Load libraries
+```{r libs, echo=FALSE, warning=FALSE, include=FALSE, cache=FALSE}
+## It is assumed your working directory is where this file
+
+## Load required libraries
+library(CovariateAnalysis) # get it from devtools::install_github('th1vairam/CovariateAnalysis@dev')
+library(data.table)
+library(plyr)
+library(tidyverse)
+
+library(synapser)
+library(knitr)
+library(githubr)
+library(ComplexHeatmap)
+library(grid)
+
+synLogin()
+
+library(foreach)
+library(doParallel)
+
+cl = makeCluster(detectCores()-2)
+registerDoParallel(cl)
+
+options(xtable.type="html")
+
+knitr::opts_chunk$set(
+  echo=FALSE,
+  warning=FALSE,
+  message=FALSE,
+  error = FALSE,
+  tidy = FALSE,
+  cache = TRUE)
+```
+### Get synapse and github specific parameters
+```{r synapse.parameters, include=FALSE}
+# Synapse parameters
+PARENT_ID = 'syn11638075'
+
+# Github commit for the source code
+thisFileName <- 'moduleDriverAnalysis.Rmd'
+thisRepo <- getRepo(repository = "th1vairam/CRANIO", ref="branch", refName='moduleAnalysis')
+thisFile <- getPermlink(repository = thisRepo, repositoryPath=thisFileName)
+```
+### Get modules and conservation results from synapse
+```{r syn.get}
+# Get correlation matrix ids in synapse
+cor.mat.ids = c(cohort1 = 'syn11635629', cohort2 = 'syn11635905') %>%
+  purrr::imap_dfr(.f =function(foldId, foldName){
+   synapser::synQuery(paste0('select * from folder where parentId =="', foldId, '"'))$results %>%
+      purrr::map_dfr(.f = function(x){
+        tmp1 = synapser::synQuery(paste0('select * from file where parentId =="', x$folder.id, '"'))$results %>% 
+          purrr::keep(.p = function(x){x$file.name == 'Data_Correlation.txt'}) %>%
+          purrr::map_dfr(function(x){data.frame(file.id = x$file.id)}) %>%
+          dplyr::mutate(reference = x$folder.name)
+          
+      }) %>%
+      dplyr::mutate(cohort = foldName)
+  })
+all.used.ids = unique(cor.mat.ids$file.id)
+
+# Load module membership from synapse
+mod = c(cohort1 = 'syn11635629', cohort2 = 'syn11635905') %>%
+  purrr::imap_dfr(.f =function(foldId, foldName){
+    synapser::synQuery(paste0('select * from folder where parentId =="', foldId, '"'))$results %>%
+      purrr::map_dfr(.f = function(x){
+        tmp1 = synapser::synQuery(paste0('select * from file where parentId =="', x$folder.id, '"'))$results %>%
+          purrr::keep(.p = function(x){x$file.name == 'output.RData'})
+        load(synapser::synGet(tmp1[[1]]$file.id)$path)
+        mod = output$modules %>%
+          purrr::imap_dfr(.f = function(x, nx){
+            data.frame(ModuleName = nx, members = paste(unique(x), collapse = ', '))
+          }) %>%
+          dplyr::mutate(reference = x$folder.name)
+      }) %>%
+      dplyr::mutate(cohort = foldName)
+  })
+all.used.ids = c(all.used.ids, 'syn11635629', 'syn11635905')
+
+# Load conserved non-conserved modules
+cons.non.cons.mod = fread(synapser::synGet('syn12144314')$path)
+all.used.ids = c(all.used.ids, 'syn12144314')
+
+mod.df = mod %>%
+  dplyr::inner_join(cons.non.cons.mod) %>%
+  dplyr::inner_join(cor.mat.ids)
+
+# Get differential expression results
+diffExp.scores = c(cohort1 = 'syn8555303', cohort2 = 'syn8555329') %>%
+  purrr::map(.f = function(id){ fread(synapser::synGet(id)$path, data.table = F) }) %>%
+  dplyr::bind_rows(.id = 'cohort') %>%
+  dplyr::filter(Model == 'Dx+RNADaysToHarvest') %>%
+  dplyr::select(cohort, Model, Comparison, ensembl_gene_id, logFC, adj.P.Val) %>%
+  unique() %>%
+  dplyr::group_by(cohort, Model, Comparison) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(rank = rank(rank(-log10(adj.P.Val)) + rank(abs(logFC))),
+                rank = rank/max(rank),
+                Comparison = factor(Comparison, 
+                                    levels = c("Coronal-Control", "Coronal-Lambdoid", "Lambdoid-Control",
+                                               "Metopic-Control", "Metopic-Lambdoid", "Sagittal-Control",
+                                               "Sagittal-Coronal", "Sagittal-Lambdoid", "Sagittal-Metopic"),
+                                    labels = c("coronal-control", "coronal-lambdoid", "lambdoid-control",
+                                               "metopic-control", "metopic-lambdoid", "sagittal-control",
+                                               "sagittal-coronal", "sagittal-lambdoid", "sagittal-metopic")))
+all.used.ids = c(all.used.ids, 'syn8555303', 'syn8555329')
+```
+
+### Perform differential expression driver analysis
+```{r diffexp.driver}
+# Function to rank genes in the network based on its enrichment for differential expression
+propagateDifferentialExpressionScores <- function(g, order = 1){
+  # g = weighted, undirected graph with Gx as a vertex property
+  # Gx = gene/vertex importance score
+  # order = defines network neighborhood (i.e., include order number of nodes away from selected node)
+  Gx = igraph::V(g)$Gx
+  names(Gx) = igraph::V(g)$name
+  
+  neighbor.graph = igraph::make_ego_graph(g, order = order, nodes = igraph::V(g), mode = "all")
+  names(neighbor.graph) = igraph::V(g)$name
+  
+  D = igraph::distances(g, weights = E(g)$rho)
+  
+  S = igraph::strength(g, mode = "all", weights = E(g)$rho)
+  
+  Nx = foreach(vert=V(g)$name,
+               .combine = c,
+               .packages = c('igraph'),
+               .export = c('neighbor.graph', 'Gx', 'D', 'S'),
+               .verbose = T) %dopar% {
+                 
+                 SP = igraph::shortest_paths(neighbor.graph[[vert]], 
+                                             from = vert, 
+                                             to = V(neighbor.graph[[vert]]), 
+                                             mode = "all", 
+                                             weights = E(neighbor.graph[[vert]])$rho,
+                                             predecessors = T)
+                 
+                 Nx = Gx[igraph::V(neighbor.graph[[vert]])$name]
+                 Nx = Nx*(1/D[vert,igraph::V(neighbor.graph[[vert]])$name])
+                 Nx = Nx*(1/S[vert])
+                 names(Nx) = V(neighbor.graph[[vert]])$name
+                 sum(Nx[names(Nx) != vert])
+               }
+  names(Nx) = V(g)$name
+  return(Nx)
+}
+
+diffExp.drivers = mod.df %>%
+  plyr::ddply(.(cohort, reference, against, ModuleName), .fun = function(x){
+    g = fread(synapser::synGet(x$file.id)$path) %>%
+      igraph::graph_from_data_frame(directed = FALSE)
+    
+    comp = c(paste(x$reference, x$against, sep = '-'),
+             paste(x$against, x$reference, sep = '-'))
+    
+    Gx = diffExp.scores %>%
+      dplyr::filter(Comparison %in% comp, cohort == x$cohort) %>%
+      dplyr::select(ensembl_gene_id, rank) %>%
+      data.frame()
+    rownames(Gx) = Gx$ensembl_gene_id
+    V(g)$Gx = Gx[V(g)$name, 'rank']
+    
+    modMembers = str_split(x$members, ', ')[[1]]
+    sg = igraph::induced_subgraph(g, V(g)$name %in% modMembers)
+    
+    nr = propagateDifferentialExpressionScores(sg, order = 3)
+    return(data.frame(ensembl_gene_id = names(nr), scores = nr))  
+  })
+
+mart <- useMart(biomart = "ENSEMBL_MART_ENSEMBL", host = "dec2016.archive.ensembl.org", dataset = "hsapiens_gene_ensembl")
+
+Ensemble2HGNC <- getBM(attributes = c("ensembl_gene_id", "hgnc_symbol"),
+                       filters = "ensembl_gene_id", 
+                       values = unique(diffExp.drivers$ensembl_gene_id),
+                       mart = mart)
+
+writeLines('Top 10 genes influencing differential expression in each modules')
+diffExp.drivers %>%
+  dplyr::left_join(Ensemble2HGNC) %>%
+  dplyr::group_by(cohort, reference, against, ModuleName) %>%
+  dplyr::arrange(desc(scores)) %>%
+  dplyr::slice(1:10) %>%
+  dplyr::summarise(symbols = paste(hgnc_symbol, collapse = ', ')) %>%
+  kable()
+```
+```{r sym.store}
+fwrite(diffExp.drivers, file = 'diffExpDrivers.tsv', sep = '\t')
+obj = synapser::File('diffExpDrivers.tsv', name = 'Differential expression drive rankings', parentId = PARENT_ID)
+obj = synapser::synStore(obj, used = all.used.ids, executed = thisFile, 
+                         activityName = 'Module based gene ranking')
+```

@@ -1,0 +1,158 @@
+---
+title: "MEGENA module conservation analysis between cohort 1 and 2"
+author: "Thanneer Perumal"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+### Load libraries
+```{r libs, echo=FALSE, warning=FALSE, include=FALSE, cache=FALSE}
+## It is assumed your working directory is where this file
+
+## Load required libraries
+library(CovariateAnalysis) # get it from devtools::install_github('th1vairam/CovariateAnalysis@dev')
+library(data.table)
+library(plyr)
+library(tidyverse)
+
+library(synapseClient)
+library(knitr)
+library(githubr)
+
+synapseLogin()
+
+library(foreach)
+library(doParallel)
+
+cl = makeCluster(detectCores()-2)
+registerDoParallel(cl)
+
+options(xtable.type="html")
+
+knitr::opts_chunk$set(
+  echo=FALSE,
+  warning=FALSE,
+  message=FALSE,
+  error = FALSE,
+  tidy = FALSE,
+  cache = TRUE)
+```
+### Get synapse and github specific parameters
+```{r synapse.parameters, include=FALSE}
+# Synapse parameters
+parentId = 'syn11635115'
+
+# Github commit for the source code
+thisFileName <- 'moduleEnrichmentAnalysis.Rmd'
+thisRepo <- getRepo(repository = "th1vairam/CRANIO", ref="branch", refName='moduleAnalysis')
+thisFile <- getPermlink(repository = thisRepo, repositoryPath=thisFileName)
+```
+### Get module definitions from synapse
+```{r get.mdl}
+all.used.ids = c(cohort1 = 'syn11635629', cohort2 = 'syn11635905')
+mod = c(cohort1 = 'syn11635629', cohort2 = 'syn11635905') %>%
+  plyr::llply(.fun =function(foldId){
+    synQuery(paste0('select * from folder where parentId =="', foldId, '"')) %>%
+      plyr::dlply(.(folder.name), .fun = function(x){
+        tmp1 = synQuery(paste0('select * from file where parentId =="', x$folder.id, '"')) %>% 
+          dplyr::filter(file.name == 'output.RData')
+        load(synGet(as.character(tmp1$file.id))@filePath)
+        
+        # Remove small or big modules
+        mod = output$modules
+        sz = sapply(mod, length)
+        mod = mod[sz >= 30 & sz <= 2000]
+        return(mod)
+      })
+  }) %>%
+  purrr::imap(.f = function(x, nx){
+    purrr::imap(x, .f = function(y, ny, nx){
+      names(y) = paste(nx, ny, names(y), sep = '.')
+      return(y)
+    }, nx)
+  }) %>% 
+  purrr::flatten() %>% 
+  purrr::flatten()
+
+# Convert ensembl ids to hgnc_symbol
+background.genes = Reduce(c, mod) %>% unique()
+ensembl = useMart(host = "jul2016.archive.ensembl.org", 
+                  dataset = "hsapiens_gene_ensembl", 
+                  biomart = "ENSEMBL_MART_ENSEMBL")
+ensg2hgnc = getBM(attributes = c('ensembl_gene_id','hgnc_symbol'), 
+                  filters = 'ensembl_gene_id', 
+                  values = background.genes, 
+                  mart = ensembl)
+
+mod = lapply(mod, function(x, ensg2hgnc){
+  ensg2hgnc %>%
+    dplyr::filter(ensembl_gene_id %in% x) %>% 
+    dplyr::select(hgnc_symbol) %>% 
+    unlist() %>% unique()
+}, ensg2hgnc)
+background.genes = ensg2hgnc %>%
+    dplyr::filter(ensembl_gene_id %in% background.genes) %>% 
+    dplyr::select(hgnc_symbol) %>% 
+    unlist() %>% unique()
+```
+### Get all gene sets
+```{r get.gs}
+# Get enrichr gene sets from synapse
+load(synapseClient::synGet('syn4867851')@filePath)
+all.used.ids = c('syn4867851', all.used.ids)
+# 'Chromosome_Location', 'Cross_Species_Phenotype', 'Disease_Signatures_from_GEO_down', 'Disease_Signatures_from_GEO_up',
+# 'ENCODE_TF_ChIP-seq','Mouse_Gene_Atlas', 'OMIM_Disease', 'OMIM_Expanded', 'TargetScan_microRNA',
+# 'TF-LOF_Expression_from_GEO', 'TRANSFAC_and_JASPAR_PWMs', 'Single_Gene_Perturbations_from_GEO_up',
+# 'Single_Gene_Perturbations_from_GEO_down', 'Aging_Perturbations_from_GEO_down', 'Aging_Perturbations_from_GEO_up', 
+# 'Disease_Perturbations_from_GEO_down', 'Disease_Perturbations_from_GEO_up', 'DrugMatrix', 'Drug_Perturbations_from_GEO_down',
+# 'Drug_Perturbations_from_GEO_up', 'GTEx_Tissue_Sample_Gene_Expression_Profiles_down',
+# 'GTEx_Tissue_Sample_Gene_Expression_Profiles_up', 'Jensen_DISEASES', 'RNA-Seq_Disease_Gene_and_Drug_Signatures_from_GEO'
+
+GeneSets = GeneSets[c('BioCarta', 'GO_Biological_Process', 'KEGG_2015', 'Reactome', 
+                      'Panther', 'dbGaP', 'WikiPathways')]
+gs = list()
+gs$HypothesisFree = do.call(c, GeneSets) %>%
+  lapply(function(y){
+    str_split(y, '\\,') %>% 
+      sapply(function(x){ x[[1]] })
+  })
+
+# Download cranio related gene sets from synapse
+load(synGet('syn5752718')@filePath)
+gs$HypothesisDriven = GeneSets[c("Del-Dup_Osteo", "IGF1", "Synostosis", "Thyroid")]
+
+# Remove much smaller or much larger gene sets
+gs = purrr::map(gs, function(geneSet, bckGenes){
+  geneSet = purrr::map(geneSet, function(x, bckGenes){
+    intersect(x, bckGenes) %>% unique()
+  }, bckGenes)
+  
+  n = sapply(geneSet, length)
+  geneSet = geneSet[n >= 10 & n <= 3000]
+}, background.genes)
+```
+### Perform enrichment analysis for all the modules
+```{r enrich}
+enrich.results = mod %>%
+  plyr::ldply(.fun = function(gsToTest, gs, bckGenes){
+    gsToTest = setdiff(unique(gsToTest),'')
+    if (length(gsToTest) >= 10){
+      enrich = plyr::ldply(gs, .fun = function(y, gsToTest, bckGenes){
+        plyr::ldply(y, .fun = function(gsToTest1, gsToTest, bckGenes){
+          CovariateAnalysis::fisherEnrichment(gsToTest1, gsToTest, bckGenes)
+        }, gsToTest, bckGenes, .id = 'SetName')
+      }, gsToTest, bckGenes, .id = 'Category')
+    } else {
+      enrich = data.frame()
+    }
+    return(enrich)
+  }, 
+  gs, background.genes, .parallel = T, 
+  .paropts = list(.packages = c('CovariateAnalysis', 'plyr', 'dplyr','data.table')))
+
+fwrite(enrich.results, file = 'enrichmentResults.tsv', sep = '\t')
+obj = File('enrichmentResults.tsv', name = 'Enrichment Results (for all modules)', parentId = parentId)
+obj = synapseClient::synStore(obj, executed = thisFile, used = as.character(all.used.ids), 
+                              activityName = 'Pathway enrichment analysis', 
+                              activityDescription = 'Pathway enrichment analysis for each modules')
+```

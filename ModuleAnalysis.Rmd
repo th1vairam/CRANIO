@@ -1,0 +1,236 @@
+---
+title: "MEGENA module conservation analysis between cohort 1 and 2"
+author: "Thanneer Perumal"
+output:
+  html_document:
+    df_print: paged
+editor_options:
+  chunk_output_type: console
+---
+### Load libraries
+```{r libs, echo=FALSE, warning=FALSE, include=FALSE, cache=FALSE}
+## It is assumed your working directory is where this file
+
+## Load required libraries
+library(CovariateAnalysis) # get it from devtools::install_github('th1vairam/CovariateAnalysis@dev')
+library(data.table)
+library(plyr)
+library(tidyverse)
+
+library(synapser)
+library(knitr)
+library(githubr)
+library(ComplexHeatmap)
+library(grid)
+
+synLogin()
+
+library(foreach)
+library(doParallel)
+
+cl = makeCluster(detectCores()-2)
+registerDoParallel(cl)
+
+options(xtable.type="html")
+
+knitr::opts_chunk$set(
+  echo=FALSE,
+  warning=FALSE,
+  message=FALSE,
+  error = FALSE,
+  tidy = FALSE,
+  cache = TRUE)
+```
+### Get synapse and github specific parameters
+```{r synapse.parameters, include=FALSE}
+# Synapse parameters
+PARENT_ID = 'syn11638075'
+
+# Github commit for the source code
+thisFileName <- 'moduleConservationAnalysisC1andC2.Rmd'
+thisRepo <- getRepo(repository = "th1vairam/CRANIO", ref="branch", refName='moduleAnalysis')
+thisFile <- getPermlink(repository = thisRepo, repositoryPath=thisFileName)
+```
+### Get modules and conservation results from synapse
+```{r syn.get}
+# oad module membership from synapse
+mod = c(cohort1 = 'syn11635629', cohort2 = 'syn11635905') %>%
+  purrr::map(.f =function(foldId){
+   synapser::synQuery(paste0('select * from folder where parentId =="', foldId, '"'))$results %>%
+      purrr::map_dfr(.f = function(x){as.data.table(x)}) %>%
+      plyr::dlply(.(folder.name), .fun = function(x){
+        tmp1 = synapser::synQuery(paste0('select * from file where parentId =="', x$folder.id, '"'))$results %>%
+          purrr::map_dfr(.f = function(x){as.data.table(x)}) %>%
+          dplyr::filter(file.name == 'output.RData')
+        load(synGet(as.character(tmp1$file.id))$path)
+        
+        # Remove small or big modules
+        mod = output$modules
+        sz = sapply(mod, length)
+        mod = mod[sz >= 30 & sz <= 2000]
+        return(mod)
+      })
+  })
+
+# Load module conservation results from synapse
+load(synapser::synGet('syn11967846')$path)
+
+# Load enrichment results of modules from synapse
+enrich.results = synapser::synGet('syn11924793')$path %>%
+  fread(data.table = F) %>%
+  tidyr::separate(.id, c('Cohort', 'SubType', 'ModuleName'), sep = '\\.') %>%
+  dplyr::group_by(Cohort, SubType, ModuleName, Category) %>%
+  dplyr::mutate(FDR = p.adjust(pval, method = 'BH'))
+```
+
+### Filter modules that are conserved between cohort 1 and 2
+```{r mdl.cnsrv, fig.height=4, fig.width=10}
+conservation.stats.cohort = conservation.stats.cohort %>%
+  dplyr::group_by(reference, subType, ModuleName) %>%
+  dplyr::mutate(Z.dens = median(Z.mean.Cor, Z.mean.kIM, na.rm = T),
+                  Z.con = median(Z.cor.adj, Z.cor.kIM, na.rm = T),
+                  Z.summary = (Z.dens + Z.con)/2) %>%
+  dplyr::arrange(desc(abs(Z.summary)))
+
+p = ggplot(conservation.stats.cohort, aes(x = ModuleName, y = Z.summary)) + geom_point()
+p = p + theme_bw() %+replace% theme(axis.text.x = element_blank())
+p = p + geom_hline(yintercept = 3, color = 'red', linetype = 'dashed')
+p = p + geom_hline(yintercept = 8, color = 'darkgreen', linetype = 'dashed')
+p = p + facet_grid(reference ~ . + subType) +  ggtitle('Module conservation between cohorts 1 and 2')
+p
+
+conserved.mod = dplyr::filter(conservation.stats.cohort, Z.summary >= 8)
+kable(conserved.mod)
+
+conserved.mod %>%
+  dplyr::group_by(subType, reference) %>%
+  dplyr::summarise(ModuleName = paste(unique(ModuleName), collapse = ', ')) %>%
+  tidyr::spread(reference, ModuleName)
+```
+### Find overlap/enrichment between conserved modules in cohort 1 and 2
+```{r mdl.ovlp.c1.c2, fig.height=8, fig.width=12}
+bck.genes = unlist(unlist(unlist(mod))) %>% unique()
+enrichment.bw.cohort = conserved.mod %>%
+  plyr::ddply(.(subType), .fun = function(x, mod, bckGenes){
+    c1 = dplyr::filter(x, reference == 'cohort1') %>% 
+      dplyr::select(ModuleName) %>%
+      unlist() %>%
+      unique()
+    c1 = mod$cohort1[[unique(x$subType)]][c1]
+    
+    c2 = dplyr::filter(x, reference == 'cohort2') %>% 
+      dplyr::select(ModuleName) %>%
+      unlist() %>%
+      unique()
+    c2 = mod$cohort2[[unique(x$subType)]][c2]
+    
+    tmp = purrr::cross2(c1, c2) %>%
+      purrr::map(.f = function(lm, bckGenes){
+        CovariateAnalysis::fisherEnrichment(lm[[1]], lm[[2]], bckGenes) 
+      }, bckGenes) %>%
+      dplyr::bind_rows() %>%
+      cbind(expand.grid(names(c1), names(c2)),.) %>%
+      dplyr::rename(Cohort1 = Var1, Cohort2 = Var2)
+  }, mod, bck.genes) %>%
+  dplyr::select(-Genes) %>%
+  dplyr::group_by(subType) %>%
+  dplyr::mutate(fdr = p.adjust(pval, method = 'BH'))
+
+ovlp.plots.bw.cohort = enrichment.bw.cohort %>%
+  dplyr::ungroup() %>%
+  plyr::dlply(.(subType), .fun = function(x){
+    or = x %>%
+      dplyr::select(Cohort1, Cohort2, Odds.Ratio) %>%
+      tidyr::spread(Cohort2, Odds.Ratio) %>%
+      as.data.frame()
+    rownames(or) = or$Cohort1
+    or$Cohort1 = NULL
+    
+    fdr = x %>%
+      dplyr::select(Cohort1, Cohort2, fdr) %>%
+      tidyr::spread(Cohort2, fdr) %>%
+      as.data.frame()
+    rownames(fdr) = fdr$Cohort1
+    fdr$Cohort1 = NULL
+    
+    or[fdr >= 0.05] = 0
+    
+    hm = ComplexHeatmap::Heatmap(or, name = 'OddsRatio', column_title = unique(x$subType))
+    g = grid.grabExpr(draw(hm))
+})
+ggpubr::ggarrange(plotlist = ovlp.plots.bw.cohort, ncol=2, nrow = 2)
+```
+
+### Filter modules from cohort 1 that are conserved in 2, and plot between subTypes
+```{r mdl.cnsrvd.c1, fig.height=8, fig.width=10}
+conservation.stats.subtypes = conservation.stats.subtypes %>%
+  dplyr::group_by(reference, against, cohort, ModuleName) %>%
+  dplyr::mutate(Z.dens = median(Z.mean.Cor, Z.mean.kIM, na.rm = T),
+                  Z.con = median(Z.cor.adj, Z.cor.kIM, na.rm = T),
+                  Z.summary = (Z.dens + Z.con)/2) %>%
+  dplyr::arrange(desc(abs(Z.summary)))
+
+conserved.mod2 = conservation.stats.subtypes %>%
+  dplyr::select(ModuleName, reference, against, cohort, Z.summary) %>%
+  dplyr::inner_join(conserved.mod %>%
+                      dplyr::select(ModuleName, reference, subType) %>%
+                      dplyr::rename(cohort = reference, reference = subType))
+
+p = ggplot(conserved.mod2, aes(x = ModuleName, y = Z.summary, color = cohort)) + geom_point()
+p = p + theme_bw() %+replace% theme(axis.text.x = element_blank())
+p = p + geom_hline(yintercept = 3, color = 'red', linetype = 'dashed')
+p = p + geom_hline(yintercept = 8, color = 'darkgreen', linetype = 'dashed')
+p = p + facet_grid(reference ~ . + against) + ggtitle('Module conservation between subtypes')
+p
+```
+Modules conserved in cohort 1 and 2, and not conserved between sub types
+```{r anlz1, results='asis'}
+tmp = conserved.mod2 %>%
+  dplyr::filter(Z.summary <= 3) %>%
+  dplyr::group_by(cohort, reference, against) %>%
+  dplyr::summarise(ModuleName = paste(unique(ModuleName), collapse = ', ')) %>%
+  tidyr::spread(against, ModuleName)
+kable(tmp)
+```
+## Annotate modules
+```{r de.enrichment}
+de.gs = c(cohort1 = 'syn8555303', cohort2 = 'syn8555329') %>%
+  purrr::map(.f = function(id){ fread(synapser::synGet(id)$path, data.table = F) }) %>%
+  dplyr::bind_rows(.id = 'cohort') %>%
+  dplyr::filter(Direction != 'NONE') %>%
+  plyr::dlply(.(cohort, Model, Comparison, Direction), .fun = function(x){
+    unique(x$ensembl_gene_id)
+  })
+de.gs = de.gs[sapply(de.gs, length) >= 20]
+
+enrich.de = plyr::ldply(mod, .fun = function(c1, deGS, bckGenes){
+  plyr::ldply(c1, .fun = function(s1, deGS, bckGenes){
+    plyr::ldply(s1, .fun = function(modMembers, deGS, bckGenes){
+      plyr::ldply(deGS, .fun = function(gs, modMembers, bckGenes){
+        CovariateAnalysis::fisherEnrichment(modMembers, gs, bckGenes)
+      }, modMembers, bckGenes, .id = 'SetName')
+    }, deGS, bckGenes, .id = 'ModuleName')
+  }, deGS, bckGenes, .id = 'subType')
+},de.gs, bck.genes, .id = 'cohort') %>%
+  dplyr::rename(Cohort = cohort, SubType = folder.name) %>%
+  dplyr::group_by(Cohort, SubType) %>%
+  dplyr::mutate(FDR = p.adjust(pval, method = 'BH'),
+                Category = 'DifferentialExpression')
+
+enrich = list(enrich.results, enrich.de) %>%
+  data.table::rbindlist(use.names = T, fill = T)
+```
+
+Annotate modules with pathway enrichment
+```{r annot.module}
+conserved.mod.annotation = conserved.mod2 %>%
+  dplyr::filter(Z.summary <= 3) %>%
+  dplyr::rename(Cohort = cohort, SubType = reference) %>%
+  dplyr::left_join(enrich.results %>%
+                     dplyr::filter(FDR <= 0.05, Odds.Ratio >= 2)) %>%
+  dplyr::group_by(Cohort, SubType, against, ModuleName) %>%
+  # dplyr::top_n(10, Odds.Ratio) %>%
+  dplyr::mutate(SetName = gsub('GO_Biological_Process.','',SetName)) %>%
+  dplyr::summarise(SetName = paste(unique(SetName), collapse = ', ')) %>%
+  kable()
+```
