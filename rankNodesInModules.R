@@ -7,27 +7,26 @@
 # Clear R console screen output
 cat("\014")
 
-library(synapseClient)
+library(synapser)
 library(knitr)
 library(githubr)
 
 library(CovariateAnalysis) # Refere th1vairam repo in github
 library(data.table)
-library(tidyr)
 library(plyr)
-library(dplyr)
-library(stringr)
+library(tidyverse)
 
 library(igraph)
 library(biomaRt)
+library(xlsx)
 
-library(doParallel)
-library(foreach)
-cl = makeCluster(14)
-registerDoParallel(cl)
+library(future)
+library(furrr)
+
+plan(multiprocess)
 
 # Login to synapse
-synapseLogin()
+synLogin()
 ############################################################################################################
 
 ############################################################################################################
@@ -48,7 +47,7 @@ activityDescription = 'Ranking genes based on network structure'
 #### Utility functions block ####
 
 # Function to rank the nodes of network based on its enrichment for neighborhoods
-scoreVertices <- function(g, order = 1){
+scoreVertices <- function(g, order = 2){
   # g = unweighted, undirected graph with Gx as a vertex property
   # Gx = gene/vertex importance score
   # order = defines network neighborhood (i.e., include order number of nodes away from selected node)
@@ -62,22 +61,19 @@ scoreVertices <- function(g, order = 1){
   
   S = igraph::strength(g, mode = "all")
   
-  Nx = foreach(vert=V(g)$name,
-               .combine = c,
-               .packages = c('igraph'),
-               .export = c('neighbor.graph', 'Gx', 'D', 'S'),
-               .verbose = T) %dopar% {
-                 
-                 SP = igraph::shortest_paths(neighbor.graph[[vert]], from = vert, 
-                                             to = V(neighbor.graph[[vert]]), mode = "all", 
-                                             predecessors = T)
-                 
-                 Nx = Gx[igraph::V(neighbor.graph[[vert]])$name]
-                 Nx = Nx*(1/D[vert,igraph::V(neighbor.graph[[vert]])$name])
-                 Nx = Nx*(1/S[vert])
-                 names(Nx) = V(neighbor.graph[[vert]])$name
-                 sum(Nx[names(Nx) != vert])
-               }
+  Nx = map(V(g)$name,.f = function(vert){
+    
+    SP = igraph::shortest_paths(neighbor.graph[[vert]], from = vert, 
+                                to = V(neighbor.graph[[vert]]), mode = "all", 
+                                predecessors = T)
+    
+    Nx = Gx[igraph::V(neighbor.graph[[vert]])$name]
+    Nx = Nx*(1/D[vert,igraph::V(neighbor.graph[[vert]])$name])
+    Nx = Nx*(1/S[vert])
+    names(Nx) = V(neighbor.graph[[vert]])$name
+    sum(Nx[names(Nx) != vert])
+  }) %>% 
+    unlist()
   names(Nx) = V(g)$name
   return(Nx)
 }
@@ -85,108 +81,260 @@ scoreVertices <- function(g, order = 1){
 
 ############################################################################################################
 #### Get differential expression and variants results from synapse ####
-ALL_USED_IDs = c('syn5745241', 'syn5752526')
+downloadFile <- function(id){
+  fread(synGet(id)$path, header = T, data.table = F)
+}
 
-dexp = downloadFile('syn5745241') %>%
-  dplyr::rename(ensembl_gene_id = V1) %>%
-  dplyr::mutate(diffexp.score = -log10(adj.P.Val)*abs(logFC))
-dexp$diffexp.score[dexp$diffexp.score < 0] = 0
+all.used.ids = c('syn8555303', 'syn8555329')
+dexp = c(cohort1 = 'syn8555303', cohort2 = 'syn8555329') %>%
+  map(.f = function(id){
+    downloadFile(id) %>%
+      plyr::dlply(.(Model, Comparison), .fun = function(y){ 
+        y %>% 
+          dplyr::mutate(dscore = -log10(adj.P.Val) * abs(logFC)) %>%
+          dplyr::select(ensembl_gene_id, hgnc_symbol, logFC, adj.P.Val, dscore)
+      })
+  })
 
-variant = read.table(synGet('syn5752526')@filePath, sep = '\t', header = TRUE) %>%
-  dplyr::select(Corrected.p.value, Gene.ensGene, AAChange.ensGene) %>%
-  plyr::ddply(.(AAChange.ensGene), .fun = function(x){
-    data.frame(Corrected.p.value = x$Corrected.p.value, 
-               Gene.ensGene = unlist(str_split(x$Gene.ensGene, ',')))
+## Get variants data from synapse
+all.used.ids = c(all.used.ids, c('syn17015623', 'syn17015632'))
+variants = c(all = 'syn17015623', any = 'syn17015632') %>%
+  map(.f = function(id){
+    downloadFile(id) %>%
+      dplyr::select(Gene.refGene, `GERP++_RS`, CADD_phred, Polyphen2_HDIV_score, Polyphen2_HVAR_score) %>%
+      dplyr::rename(GeneName = Gene.refGene,
+                    GERP = `GERP++_RS`,
+                    CADD = CADD_phred,
+                    Polyphen2HDIV = Polyphen2_HDIV_score,
+                    Polyphen2HVAR = Polyphen2_HVAR_score) %>%
+      dplyr::mutate_at(c('GERP', 'CADD', 'Polyphen2HDIV', 'Polyphen2HVAR'), .funs = as.numeric) %>%
+      dplyr::group_by(GeneName) %>%
+      dplyr::mutate(rk = rank(rank(GERP) + rank(CADD) + rank(Polyphen2HVAR) + rank(Polyphen2HDIV))) %>%
+      dplyr::top_n(1, rk) %>%
+      dplyr::mutate(rk = rank(rank(GERP) + rank(CADD))) %>%
+      dplyr::top_n(1, rk) %>%
+      dplyr::mutate(rk = rank(rank(GERP))) %>%
+      dplyr::top_n(1, rk) %>%
+      distinct() %>%
+      dplyr::select(-(rk))
+  })
+
+## Load modules from synapse
+all.used.ids = c(all.used.ids, c('syn17015634', 'syn17015635'))
+mod = c(cohort1 = 'syn17015634', cohort2 = 'syn17015635') %>%
+  map(.f =function(tblId){
+    synapser::synTableQuery(paste0('select name,id from ', tblId))$asDataFrame() %>%
+      dplyr::filter(name == 'output.RData') %>%
+      dplyr::select(id) %>%
+      dplyr::mutate(folderName = id) %>%
+      mutate_at(.vars = 'folderName', .funs = function(id){
+        map(id, .f = function(x){
+          synGet(x, downloadFile = F)$properties$parentId
+        }) %>% 
+          map(.f = function(x){
+            synGet(x, downloadFile = F)$properties$name
+          }) %>% 
+          unlist()
+      }) %>%
+      group_by(folderName) %>%
+      nest() %>%
+      deframe() %>%
+      map(.f = function(id){
+        load(synGet(id)$path)
+        
+        # Remove small or big modules
+        mod = output$modules
+        sz = sapply(mod, length)
+        mod = mod[sz >= 30 & sz <= 2000]
+        return(mod)
+      })
+  })
+
+## Important modules
+imp.mod = list(
+  cohort1 = list(control = c(),
+                 coronal = c('c1_28', 'c1_3'),
+                 metopic = c('c1_7', 'c1_54', 'c1_310', 'c1_363', 'c1_205', 'c1_59'),
+                 sagittal = c('c1_47')),
+  cohort2 = list(control = c('c1_13', 'c1_11', 'c1_32', 'c1_242', 'c1_123', 'c1_57', 
+                             'c1_128', 'c1_114', 'c1_4', 'c1_177', 'c1_55'),
+                 coronal = c(),
+                 metopic = c('c1_101', 'c1_117', 'c1_146', 'c1_241', 'c1_152', 'c1_158'),
+                 sagittal = c('c1_64')))
+
+## Subset important modules
+mod = mod %>%
+  map2(imp.mod, .f = function(x,y){
+    map2(x,y[names(x)], .f = function(a,b){
+      a = a[b]
+    })
+  })
+
+## Get networks from synapse
+all.used.ids = c(all.used.ids, c('syn17015634', 'syn17015635'))
+cor.mat = c(cohort1 = 'syn17015634', cohort2 = 'syn17015635') %>%
+  map(.f =function(tblId){
+    synapser::synTableQuery(paste0('select name,id from ', tblId))$asDataFrame() %>%
+      dplyr::filter(name == 'Data_Correlation.txt') %>%
+      dplyr::select(id) %>%
+      dplyr::mutate(folderName = id) %>%
+      mutate_at(.vars = 'folderName', .funs = function(id){
+        map(id, .f = function(x){
+          synGet(x, downloadFile = F)$properties$parentId
+        }) %>% 
+          map(.f = function(x){
+            synGet(x, downloadFile = F)$properties$name
+          }) %>% 
+          unlist()
+      }) %>%
+      group_by(folderName) %>%
+      nest() %>%
+      deframe()
+  })
+
+## Run node ranking analysis
+all.node.ranks = pmap(list(cor.mat, mod, dexp), .f = function(innerCmat, innerMod, innerDexp){
+  tmp1 = map2(innerCmat, innerMod[names(innerCmat)], .f = function(stCmat, stMod){
+    if(length(stMod) != 0){
+      corMat = synGet(as.character(stCmat))$path %>%
+        fread(data.table = FALSE, header = T) %>%
+        dplyr::filter(row %in% unique(unlist(stMod)),
+                      col %in% unique(unlist(stMod))) %>%
+        igraph::graph_from_data_frame(directed = FALSE) %>%
+        igraph::as_adjacency_matrix(attr = 'rho', type = 'both') %>%
+        as.matrix()
+     
+      nscores = future_map(stMod, .f = function(modGenes){
+        corMat = corMat[modGenes, modGenes]
+        g = igraph::graph_from_adjacency_matrix(corMat, mode = 'undirected',
+                                                weighted = T, diag = F)
+        scores = innerDexp$`Dx.Cranio+RNADaysToHarvest.Cranio-Control` %>%
+          dplyr::full_join(variants$all %>%
+                             dplyr::rename(hgnc_symbol = GeneName)) %>%
+          dplyr::filter(ensembl_gene_id %in% modGenes)
+        scores[is.na(scores)] = 0
+        scores = scores %>%
+          mutate(rk = rank(dscore) + rank(GERP) + rank(CADD) + rank(Polyphen2HDIV) + rank(Polyphen2HVAR),
+                 rk = rank(rk)/max(rk)) %>%
+          column_to_rownames('ensembl_gene_id') %>%
+          as.data.frame()
+        V(g)$Gx = scores[V(g)$name, 'rk']
+        
+        ns = scoreVertices(g, order = 3) 
+        
+        # Perform randomisation
+        ns.perm = future_map(1:100, .f= function(i){
+          V(g)$Gx = sample(scores$rk)
+        }) %>%
+          bind_cols()
+        
+        pval = map(1:length(ns), .f = function(i){
+          sum(as.numeric(ns.perm[i,] >= ns[i]), na.rm = T)/100
+        }) %>% 
+          unlist() %>%
+          p.adjust(method = 'BH')
+        
+        ns = data.frame(ensembl_gene_id = names(ns), nodeScores = ns, pval = pval) %>%
+          left_join(scores %>% 
+                      rownames_to_column(var = 'ensembl_gene_id')) %>%
+          arrange(desc(nodeScores)) %>%
+          dplyr::select(-rk)  
+      })
+    }
+  })
+}) %>%
+  map(.f = function(x){
+    x %>%
+      map(.f = function(y){
+        y %>% bind_rows(.id = 'moduleName')
+      }) %>%
+      bind_rows(.id = 'subType')
   }) %>%
-  dplyr::select(-AAChange.ensGene) %>%
-  dplyr::rename(variant.adj.P.Val = Corrected.p.value, ensembl_gene_id = Gene.ensGene) %>%
-  dplyr::mutate(variant.score = -log10(variant.adj.P.Val)) %>%
-  unique
-variant$variant.score[variant$variant.score < 0] = 0
+  bind_rows(.id = 'cohort')
 
-Gx = full_join(dexp, variant) %>%
-  unique
-Gx$variant.adj.P.Val[is.na(Gx$variant.adj.P.Val)] = 1
-Gx$variant.adj.P.Val[Gx$variant.adj.P.Val > 1] = 1
-Gx$adj.P.Val[is.na(Gx$adj.P.Val)] = 1
-Gx[is.na(Gx)] = 0
-
-Gx = Gx %>%
-  dplyr::mutate(gene.score = variant.score + diffexp.score) %>%
-  unique() %>%
-  group_by(ensembl_gene_id) %>%
-  top_n(1, gene.score) %>%
-  data.frame
-rownames(Gx) = Gx$ensembl_gene_id
+any.node.ranks = pmap(list(cor.mat, mod, dexp), .f = function(innerCmat, innerMod, innerDexp){
+  tmp1 = map2(innerCmat, innerMod[names(innerCmat)], .f = function(stCmat, stMod){
+    if(length(stMod) != 0){
+      corMat = synGet(as.character(stCmat))$path %>%
+        fread(data.table = FALSE, header = T) %>%
+        dplyr::filter(row %in% unique(unlist(stMod)),
+                      col %in% unique(unlist(stMod))) %>%
+        igraph::graph_from_data_frame(directed = FALSE) %>%
+        igraph::as_adjacency_matrix(attr = 'rho', type = 'both') %>%
+        as.matrix()
+      
+      nscores = future_map(stMod, .f = function(modGenes){
+        corMat = corMat[modGenes, modGenes]
+        g = igraph::graph_from_adjacency_matrix(corMat, mode = 'undirected',
+                                                weighted = T, diag = F)
+        scores = innerDexp$`Dx.Cranio+RNADaysToHarvest.Cranio-Control` %>%
+          dplyr::full_join(variants$any %>%
+                             dplyr::rename(hgnc_symbol = GeneName)) %>%
+          dplyr::filter(ensembl_gene_id %in% modGenes)
+        scores[is.na(scores)] = 0
+        scores = scores %>%
+          mutate(rk = rank(dscore) + rank(GERP) + rank(CADD) + rank(Polyphen2HDIV) + rank(Polyphen2HVAR),
+                 rk = rank(rk)/max(rk)) %>%
+          column_to_rownames('ensembl_gene_id') %>%
+          as.data.frame()
+        V(g)$Gx = scores[V(g)$name, 'rk']
+        
+        ns = scoreVertices(g, order = 3) 
+        
+        # Perform randomisation
+        ns.perm = future_map(1:100, .f= function(i){
+          V(g)$Gx = sample(scores$rk)
+        }) %>%
+          bind_cols()
+        
+        pval = map(1:length(ns), .f = function(i){
+          sum(as.numeric(ns.perm[i,] >= ns[i]), na.rm = T)/100
+        }) %>% 
+          unlist() %>%
+          p.adjust(method = 'BH')
+        
+        ns = data.frame(ensembl_gene_id = names(ns), nodeScores = ns, pval = pval) %>%
+          left_join(scores %>% 
+                      rownames_to_column(var = 'ensembl_gene_id')) %>%
+          arrange(desc(nodeScores)) %>%
+          dplyr::select(-rk)  
+      })
+    }
+  })
+}) %>%
+  map(.f = function(x){
+    x %>%
+      map(.f = function(y){
+        y %>% bind_rows(.id = 'moduleName')
+      }) %>%
+      bind_rows(.id = 'subType')
+  }) %>%
+  bind_rows(.id = 'cohort')
 ############################################################################################################
 
-############################################################################################################
-#### Get network ####
-ALL_USED_IDs = c(ALL_USED_IDs, 'syn5907918')
+node.ranks = list(all = all.node.ranks, any = any.node.ranks) %>%
+  bind_rows(.id = 'varianceComputation')
 
-# Get network from synapse (rda format)
-load(synGet('syn5907918')@filePath)
+write.table(node.ranks, file = 'noderankings.tsv', sep = '\t')
+obj = File('noderankings.tsv', name = 'Node Rankings', parentId = 'syn11635115')
+obj = synStore(obj, executed = thisFile, use = all.used.ids, 
+               activityName = activityName,
+               activityDescription = activityDescription)
 
-# Convert lsparseNetwork to igraph graph object
-g = igraph::graph.adjacency(bicNetworks$rankConsensus$network, mode = 'undirected', diag = F)
+cranioGenes = c('ADAMTSL4', 'ALPL', 'ALX4', 'ASXL1', 'ATR', 'CDC45', 'COLEC11', 
+                'CTSK', 'CYP26B1', 'EFNA4', 'EFNB1', 'ERF', 'ESCO2', 'FAM20C', 
+                'FBN1', 'FGFR1', 'FGFR2', 'FGFR3', 'FLNA', 'FREM1', 'GLI3', 
+                'GNAS', 'GNPTAB', 'GPC3', 'HUWE1', 'IDS', 'IDUA', 'IFT122', 'IFT43', 
+                'GF1R', 'IHH', 'IL11RA', 'IRX5', 'JAG1', 'KAT6A', 'KMT2D', 'KRAS', 
+                'LMX1B', 'LRP5', 'MEGF8', 'MSX2', 'PHEX', 'POR', 'RAB23', 'RECQL4',
+                'RUNX2', 'SCARF2', 'SH3PXD2B', 'SKI', 'SPECC1L', 'STAT3', 'TCF12', 'TGFBR1', 
+                'TGFBR2', 'TMCO1', 'TWIST1', 'WDR19', 'WDR35', 'ZEB2','ZIC1')
 
-# Set Gx as vertex property
-V(g)$Gx = Gx[V(g)$name,'gene.score']
-V(g)$Gx[is.na(V(g)$Gx)] = 0
-############################################################################################################
 
-############################################################################################################
-#### Get modules ####
-# Download modules from synapse
-modules = downloadFile('syn5923906')
-ALL_USED_IDs = c(ALL_USED_IDs, 'syn5923906')
+# Define biomart object
+mart <- useMart(biomart = "ENSEMBL_MART_ENSEMBL", host = "ensembl.org", dataset = "hsapiens_gene_ensembl")
 
-# Convert ensemble gene id's to hgnc symbols using biomart
-ensembl = useMart("ensembl",dataset="hsapiens_gene_ensembl")
-ensg2hgnc = getBM(attributes = c('ensembl_gene_id','hgnc_symbol'), filters = 'ensembl_gene_id', values = modules$EnsembleID, mart = ensembl)
-############################################################################################################
-
-############################################################################################################
-#### Score/Rank genes ####
-
-#### Based on neighborhood enrichment ####
-vertex.score = scoreVertices(g, order = 3) %>% 
-  rownameToFirstColumn('ensembl_gene_id') %>% 
-  dplyr::rename(net.score = DF)
-stopCluster(cl)
-
-#### Based on node degree ####
-node.degree = degree(g, mode = 'all') %>% 
-  rownameToFirstColumn('ensembl_gene_id') %>% 
-  dplyr::rename(degree.score = DF)
-############################################################################################################
-
-############################################################################################################
-#### Store results in synapse ####
-results = inner_join(vertex.score, node.degree) %>% 
-  inner_join(Gx) %>%
-  dplyr::select(ensembl_gene_id, adj.P.Val, logFC, variant.adj.P.Val, diffexp.score, variant.score, gene.score, net.score, degree.score) %>%
-  left_join(modules %>%
-              dplyr::rename(ensembl_gene_id = EnsembleID)) %>%
-  left_join(ensg2hgnc) 
-
-write.table(results, file = 'vertexRankings.tsv', row.names = F, sep = '\t', quote=F)
-obj = File('vertexRankings.tsv', name = 'BIC Rank Consensus', parentId = 'syn6100411')
-annotations(obj) = list(dataType = 'analysis', 
-                        fileType = 'tsv',
-                        normalizationStatus = 'TRUE',
-                        analysisType = 'vertexRanking',
-                        method = 'bic',
-                        disease	= 'craniosynostosis',
-                        organism = 'HomoSapiens')
-obj = synStore(obj, activityName = activityName, 
-               activityDescription = activityDescription, 
-               used = ALL_USED_IDs, 
-               executed = thisFile)
-
-tmp = results %>%
-  dplyr::mutate(ranks1 = rank(net.score),
-                ranks2 = rank(rank(degree.score) * rank(net.score)),
-                ranks3 = rank(rank(diffexp.score) * rank(variant.score) * rank(net.score)),
-                ranks4 = rank(rank(diffexp.score) + rank(variant.score) + rank(net.score))) %>%
-  dplyr::arrange(desc(ranks1))
+# Query biomart
+Ensemble2HGNC <- getBM(attributes = c("ensembl_gene_id", "hgnc_symbol", "gene_biotype"),
+                       filters = "ensembl_gene_id", values = unique(node.ranks$ensembl_gene_id),
+                       mart = mart)
