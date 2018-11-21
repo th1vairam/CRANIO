@@ -348,8 +348,13 @@ any.node.ranks = pmap(list(cor.mat, mod, dexp), .f = function(innerCmat, innerMo
   bind_rows(.id = 'cohort')
 ############################################################################################################
 
+TF = fread(synGet('syn6040938')$path)
+all.used.ids = c(all.used.ids,'syn6040938')
+
 node.ranks = list(all = all.node.ranks, any = any.node.ranks) %>%
   bind_rows(.id = 'varianceComputation')
+node.ranks$geneType = 'gene'
+node.ranks$geneType[node.ranks$hgnc_symbol %in% TF$feature] = 'TF'
 
 write.table(node.ranks, file = 'noderankingsTFDNA.tsv', sep = '\t')
 obj = File('noderankingsTFDNA.tsv', name = 'Node Rankings (TF-DNA)', parentId = 'syn11635115')
