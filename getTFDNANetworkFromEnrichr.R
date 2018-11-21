@@ -34,9 +34,8 @@ activityName = 'Enrichr gene set curation'
 
 ############################################################################################################
 #### Store in synapse ####
-write.table(encode.gs, file = 'encodeNet.tsv', sep = '\t')
+write.table(encode.gs, file = 'encodeNet.tsv', sep = '\t', row.names = F)
 obj = File('encodeNet.tsv', name = 'Enrichr TF-DNA Network', parentId = 'syn11635115')
-obj = synStore(obj, executed = thisFile, use = all.used.ids, 
-               activityName = activityName)
+obj = synStore(obj, executed = thisFile, used = net.urls, activityName = activityName)
 
 ############################################################################################################
