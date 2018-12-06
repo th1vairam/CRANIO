@@ -361,3 +361,16 @@ obj = File('noderankingsTFDNA.tsv', name = 'Node Rankings (TF-DNA)', parentId = 
 obj = synStore(obj, executed = thisFile, use = all.used.ids, 
                activityName = activityName,
                activityDescription = activityDescription)
+
+node.ranks %>% 
+  group_by(varianceComputation, cohort, subType, moduleName) %>% 
+  filter(geneType == 'TF') %>% 
+  top_n(10,nodeScores) %>% 
+  dplyr::select(hgnc_symbol) %>% 
+  summarise(hgnc_symbol = paste(unique(hgnc_symbol), collapse = ', ')) %>%
+  fwrite('top10TFs.tsv', sep = '\t')
+  
+obj = File('top10TFs.tsv', name = 'Top 10 TFs (in modules)', parentId = 'syn11635115')
+obj = synStore(obj, executed = thisFile, use = all.used.ids, 
+               activityName = activityName,
+               activityDescription = activityDescription)
