@@ -32,7 +32,7 @@ synLogin()
 ############################################################################################################
 #### Github commit ####
 # Get github links for provenance
-thisFileName = 'rankNodesInModules.R'
+thisFileName = 'rankNodesInModulesTFDNA.R'
 
 # Github link
 thisRepo <- getRepo(repository = "th1vairam/CRANIO", ref="branch", refName='rankNodes')
@@ -42,6 +42,7 @@ thisFile <- getPermlink(repository = thisRepo, repositoryPath=paste0(thisFileNam
 activityName = 'Node rankings in modules'
 activityDescription = 'Ranking genes based on network structure'
 ############################################################################################################
+
 
 ############################################################################################################
 #### Utility functions block ####
@@ -192,6 +193,25 @@ cor.mat = c(cohort1 = 'syn17015634', cohort2 = 'syn17015635') %>%
       deframe()
   })
 
+## Get TF-DNA network from synapse
+TF.DNA.net = fread(synGet('syn17060503')$path)
+all.used.ids = c(all.used.ids, 'syn17060503')
+
+bck.genes = map_dfr(dexp, function(x){
+  map_dfr(x, function(y){y[,c('hgnc_symbol', 'ensembl_gene_id')]})
+}) %>% unique()
+
+TF.DNA.net = TF.DNA.net %>%
+  tidyr::separate(from, c('from1'), sep = '\\_') %>%
+  rename(from = from1) %>%
+  dplyr::inner_join(bck.genes %>% rename(from = hgnc_symbol, from1 = ensembl_gene_id)) %>%
+  dplyr::inner_join(bck.genes %>% rename(to = hgnc_symbol, to1 = ensembl_gene_id)) %>%
+  dplyr::select(from1, to1) %>%
+  distinct() %>%
+  igraph::graph_from_data_frame(directed = T) %>%
+  igraph::as_adjacency_matrix(type = 'both') %>%
+  as.matrix()
+
 ## Run node ranking analysis
 all.node.ranks = pmap(list(cor.mat, mod, dexp), .f = function(innerCmat, innerMod, innerDexp){
   tmp1 = map2(innerCmat, innerMod[names(innerCmat)], .f = function(stCmat, stMod){
@@ -203,6 +223,14 @@ all.node.ranks = pmap(list(cor.mat, mod, dexp), .f = function(innerCmat, innerMo
         igraph::graph_from_data_frame(directed = FALSE) %>%
         igraph::as_adjacency_matrix(attr = 'rho', type = 'both') %>%
         as.matrix()
+      
+      rnames = intersect(rownames(TF.DNA.net), rownames(corMat))
+      cnames = intersect(colnames(TF.DNA.net), colnames(corMat))
+      
+      corMat[setdiff(rownames(corMat), rnames),
+             setdiff(rownames(corMat), cnames)] = 0
+      
+      corMat[rnames, cnames] = corMat[rnames, cnames] * TF.DNA.net[rnames, cnames]
      
       nscores = future_map(stMod, .f = function(modGenes){
         corMat = corMat[modGenes, modGenes]
@@ -263,6 +291,14 @@ any.node.ranks = pmap(list(cor.mat, mod, dexp), .f = function(innerCmat, innerMo
         igraph::as_adjacency_matrix(attr = 'rho', type = 'both') %>%
         as.matrix()
       
+      rnames = intersect(rownames(TF.DNA.net), rownames(corMat))
+      cnames = intersect(colnames(TF.DNA.net), colnames(corMat))
+      
+      corMat[setdiff(rownames(corMat), rnames),
+             setdiff(rownames(corMat), cnames)] = 0
+      
+      corMat[rnames, cnames] = corMat[rnames, cnames] * TF.DNA.net[rnames, cnames]
+      
       nscores = future_map(stMod, .f = function(modGenes){
         corMat = corMat[modGenes, modGenes]
         g = igraph::graph_from_adjacency_matrix(corMat, mode = 'undirected',
@@ -312,29 +348,29 @@ any.node.ranks = pmap(list(cor.mat, mod, dexp), .f = function(innerCmat, innerMo
   bind_rows(.id = 'cohort')
 ############################################################################################################
 
+TF = fread(synGet('syn6040938')$path)
+all.used.ids = c(all.used.ids,'syn6040938')
+
 node.ranks = list(all = all.node.ranks, any = any.node.ranks) %>%
   bind_rows(.id = 'varianceComputation')
+node.ranks$geneType = 'gene'
+node.ranks$geneType[node.ranks$hgnc_symbol %in% TF$feature] = 'TF'
 
-write.table(node.ranks, file = 'noderankings.tsv', sep = '\t')
-obj = File('noderankings.tsv', name = 'Node Rankings', parentId = 'syn11635115')
+write.table(node.ranks, file = 'noderankingsTFDNA.tsv', sep = '\t')
+obj = File('noderankingsTFDNA.tsv', name = 'Node Rankings (TF-DNA)', parentId = 'syn11635115')
 obj = synStore(obj, executed = thisFile, use = all.used.ids, 
                activityName = activityName,
                activityDescription = activityDescription)
 
-cranioGenes = c('ADAMTSL4', 'ALPL', 'ALX4', 'ASXL1', 'ATR', 'CDC45', 'COLEC11', 
-                'CTSK', 'CYP26B1', 'EFNA4', 'EFNB1', 'ERF', 'ESCO2', 'FAM20C', 
-                'FBN1', 'FGFR1', 'FGFR2', 'FGFR3', 'FLNA', 'FREM1', 'GLI3', 
-                'GNAS', 'GNPTAB', 'GPC3', 'HUWE1', 'IDS', 'IDUA', 'IFT122', 'IFT43', 
-                'GF1R', 'IHH', 'IL11RA', 'IRX5', 'JAG1', 'KAT6A', 'KMT2D', 'KRAS', 
-                'LMX1B', 'LRP5', 'MEGF8', 'MSX2', 'PHEX', 'POR', 'RAB23', 'RECQL4',
-                'RUNX2', 'SCARF2', 'SH3PXD2B', 'SKI', 'SPECC1L', 'STAT3', 'TCF12', 'TGFBR1', 
-                'TGFBR2', 'TMCO1', 'TWIST1', 'WDR19', 'WDR35', 'ZEB2','ZIC1')
-
-
-# Define biomart object
-mart <- useMart(biomart = "ENSEMBL_MART_ENSEMBL", host = "ensembl.org", dataset = "hsapiens_gene_ensembl")
-
-# Query biomart
-Ensemble2HGNC <- getBM(attributes = c("ensembl_gene_id", "hgnc_symbol", "gene_biotype"),
-                       filters = "ensembl_gene_id", values = unique(node.ranks$ensembl_gene_id),
-                       mart = mart)
+node.ranks %>% 
+  group_by(varianceComputation, cohort, subType, moduleName) %>% 
+  filter(geneType == 'TF') %>% 
+  top_n(10,nodeScores) %>% 
+  dplyr::select(hgnc_symbol) %>% 
+  summarise(hgnc_symbol = paste(unique(hgnc_symbol), collapse = ', ')) %>%
+  fwrite('top10TFs.tsv', sep = '\t')
+  
+obj = File('top10TFs.tsv', name = 'Top 10 TFs (in modules)', parentId = 'syn11635115')
+obj = synStore(obj, executed = thisFile, use = all.used.ids, 
+               activityName = activityName,
+               activityDescription = activityDescription)
